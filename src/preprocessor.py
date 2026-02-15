@@ -32,28 +32,26 @@ def compute_individual_features(prices: pd.DataFrame) -> pd.DataFrame:
     daily_shifted = g["daily_return"].shift(1)
     close_shifted = g["close"].shift(1)
 
+    # groupbyオブジェクトを事前に作成して使い回す
+    intraday_grp = intraday_shifted.groupby(df["symbol"])
+    daily_grp = daily_shifted.groupby(df["symbol"])
+    close_grp = close_shifted.groupby(df["symbol"])
+
     for n in config.LOOKBACK_DAYS:
         # 過去N日の日中リターン平均（vectorized rolling）
-        df[f"intraday_ret_ma{n}"] = intraday_shifted.groupby(
-            df["symbol"]
-        ).rolling(n, min_periods=1).mean().droplevel(0)
+        df[f"intraday_ret_ma{n}"] = intraday_grp.rolling(n, min_periods=1).mean().droplevel(0)
         # 過去N日のボラティリティ（vectorized rolling）
-        df[f"volatility_{n}d"] = daily_shifted.groupby(
-            df["symbol"]
-        ).rolling(n, min_periods=1).std().droplevel(0)
+        df[f"volatility_{n}d"] = daily_grp.rolling(n, min_periods=1).std().droplevel(0)
         # 過去N日の終値移動平均乖離率（vectorized rolling）
-        close_ma = close_shifted.groupby(
-            df["symbol"]
-        ).rolling(n, min_periods=1).mean().droplevel(0)
+        close_ma = close_grp.rolling(n, min_periods=1).mean().droplevel(0)
         df[f"ma{n}_deviation"] = df["close"] / close_ma - 1
 
     # 出来高変化率
     if "volume" in df.columns:
         df["volume_change"] = g["volume"].pct_change().shift(1)
         vol_shifted = g["volume"].shift(1)
-        vol_ma5 = vol_shifted.groupby(
-            df["symbol"]
-        ).rolling(5, min_periods=1).mean().droplevel(0)
+        vol_grp = vol_shifted.groupby(df["symbol"])
+        vol_ma5 = vol_grp.rolling(5, min_periods=1).mean().droplevel(0)
         df["volume_ma5_ratio"] = df["volume"] / vol_ma5
 
     return df
@@ -91,14 +89,38 @@ def compute_pca_factors(
     n_components = n_components or config.PCA_N_COMPONENTS
     pca_model_path = config.DATA_PROCESSED_DIR / config.PCA_MODEL_CACHE
 
+    pivot_cache_path = config.DATA_PROCESSED_DIR / config.PCA_PIVOT_CACHE
+
     df = prices[["date", "symbol", "close"]].copy()
     df["daily_return"] = df.groupby("symbol")["close"].pct_change()
 
-    pivot = df.pivot_table(index="date", columns="symbol", values="daily_return")
-    # 欠損が多い銘柄を除外（80%以上データがある銘柄のみ）
-    threshold = len(pivot) * 0.8
-    pivot = pivot.dropna(axis=1, thresh=int(threshold))
-    pivot = pivot.fillna(0)
+    if fit:
+        # fit時: pivotを計算してキャッシュ保存
+        pivot = df.pivot_table(index="date", columns="symbol", values="daily_return")
+        threshold = len(pivot) * 0.8
+        pivot = pivot.dropna(axis=1, thresh=int(threshold))
+        pivot = pivot.fillna(0)
+        config.DATA_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+        pivot.to_parquet(pivot_cache_path)
+        logger.info(f"PCA pivot キャッシュ保存: {pivot.shape}")
+    else:
+        # predict時: キャッシュがあれば新規日付分だけ追記
+        if pivot_cache_path.exists():
+            cached_pivot = pd.read_parquet(pivot_cache_path)
+            cached_dates = set(cached_pivot.index)
+            new_dates = df[~df["date"].isin(cached_dates)]
+            if not new_dates.empty:
+                new_pivot = new_dates.pivot_table(index="date", columns="symbol", values="daily_return")
+                new_pivot = new_pivot.reindex(columns=cached_pivot.columns, fill_value=0).fillna(0)
+                pivot = pd.concat([cached_pivot, new_pivot]).sort_index()
+            else:
+                pivot = cached_pivot
+            logger.info(f"PCA pivot キャッシュ利用 (cached={len(cached_dates)}, total={len(pivot)})")
+        else:
+            pivot = df.pivot_table(index="date", columns="symbol", values="daily_return")
+            threshold = len(pivot) * 0.8
+            pivot = pivot.dropna(axis=1, thresh=int(threshold))
+            pivot = pivot.fillna(0)
 
     # PCA成分数をデータに合わせて調整
     actual_components = min(n_components, pivot.shape[1], pivot.shape[0])
@@ -173,7 +195,8 @@ def build_dataset(
     # セクター情報
     if stock_list is not None and "sector_code" in stock_list.columns:
         sector_map = stock_list.set_index("symbol")[["sector_code", "sector_name"]].to_dict("index")
-        df["sector_code"] = df["symbol"].map(lambda s: sector_map.get(s, {}).get("sector_code", "0"))
+        sector_code_map = {s: v.get("sector_code", "0") for s, v in sector_map.items()}
+        df["sector_code"] = df["symbol"].map(sector_code_map).fillna("0")
         le = LabelEncoder()
         df["sector_encoded"] = le.fit_transform(df["sector_code"].astype(str))
         # LabelEncoderを保存
@@ -182,8 +205,9 @@ def build_dataset(
             pickle.dump(le, f)
 
     # 曜日・月
-    df["dayofweek"] = pd.to_datetime(df["date"]).dt.dayofweek
-    df["month"] = pd.to_datetime(df["date"]).dt.month
+    dt = pd.to_datetime(df["date"])
+    df["dayofweek"] = dt.dt.dayofweek
+    df["month"] = dt.dt.month
 
     logger.info(f"データセット構築完了: {len(df)}行, {df['symbol'].nunique()}銘柄")
     return df

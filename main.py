@@ -15,11 +15,21 @@ from src.preprocessor import build_dataset
 from src.model import train_model, load_meta
 from src.predictor import predict_all, display_ranking
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
 logger = logging.getLogger(__name__)
+
+
+def _setup_logging(debug: bool = False) -> None:
+    """ログ設定。通常時はyfinance等の外部ライブラリのノイズを抑制する。"""
+    level = logging.DEBUG if debug else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    if not debug:
+        # yfinanceの"possibly delisted"等のエラーログを抑制
+        logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+        # LightGBMの冗長なログを抑制
+        logging.getLogger("lightgbm").setLevel(logging.WARNING)
 
 
 def _ensure_dirs() -> None:
@@ -107,13 +117,12 @@ def cmd_run(args: argparse.Namespace) -> None:
     stock_list = fetch_stock_list()
     print(f"銘柄リスト: {len(stock_list)}銘柄")
 
-    fetch_index_data()
+    index_data = fetch_index_data()
     prices = fetch_price_data(stock_list)
     print(f"価格データ: {len(prices)}行, {prices['symbol'].nunique() if not prices.empty else 0}銘柄")
 
     # 2. 学習（既存モデルがあれば追加学習、なければフル学習）
     logger.info("--- [2/3] モデル学習 ---")
-    prices, index_data = _load_prices()
     incremental = load_meta() is not None
     mode = "追加学習" if incremental else "フル学習（初回）"
     print(f"学習モード: {mode}")
@@ -121,9 +130,9 @@ def cmd_run(args: argparse.Namespace) -> None:
     dataset = build_dataset(prices, stock_list, index_data, pca_fit=True)
     train_model(dataset, incremental=incremental)
 
-    # 3. 予測
+    # 3. 予測（学習時のdatasetを再利用してbuild_datasetの二重呼び出しを回避）
     logger.info("--- [3/3] 予測・ランキング ---")
-    result = predict_all(prices, stock_list, index_data)
+    result = predict_all(prices, stock_list, index_data, dataset=dataset)
     display_ranking(result, top_n=args.top)
 
     if args.output:
@@ -135,6 +144,7 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="日本株 翌日上昇確率ランキングシステム")
+    parser.add_argument("--debug", action="store_true", help="デバッグモード（外部ライブラリの詳細ログを表示）")
     subparsers = parser.add_subparsers(dest="command", help="サブコマンド")
 
     # fetch
@@ -164,6 +174,7 @@ def main() -> None:
         parser.print_help()
         sys.exit(1)
 
+    _setup_logging(debug=args.debug)
     args.func(args)
 
 

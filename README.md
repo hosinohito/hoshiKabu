@@ -130,6 +130,23 @@ python eval_walkforward.py
 
 値下がり予測が主力です。上昇予測の精度改善は今後の課題です。
 
+## パフォーマンス最適化
+
+以下の最適化を実施済みです。
+
+### 第1弾: コア処理の効率化
+- **build_dataset二重呼び出し排除**: `cmd_run()`内で学習時に構築したdatasetを予測時にそのまま再利用
+- **groupbyオブジェクト使い回し**: `compute_individual_features()`内で同一シンボルへのgroupbyを1回だけ構築し全特徴量計算で共有
+- **PCA pivotキャッシュ**: fit時にpivotテーブルをparquet保存し、predict時は差分日付のみ追記して再計算を回避
+
+### 第2弾: I/O・ループの効率化
+- **parquet再読込排除**: `cmd_run()`で`fetch_price_data()`/`fetch_index_data()`の戻り値をそのまま使い、同じファイルのディスク再読込（数百MB）を削除
+- **pd.to_datetime()統合**: 同一カラムへの重複呼び出しを1変数に集約
+- **セクターマッピング最適化**: ネストされた辞書lambdaを平坦辞書の`.map()`に置き換え
+- **日次フィルタのgroupby事前辞書化**: 毎日の全行スキャン O(n)×日数 を、事前`groupby("date")`による O(1)辞書参照に改善（eval_walkforward.py, eval_lookback.py）
+- **nlargest/nsmallest化**: `sort_values().head()` を `nlargest()`/`nsmallest()` に置き換え、O(n log n) → O(n) ヒープ選択に改善
+- **eval_lookback.py groupby使い回し**: `add_lookback_features()`のgroupbyオブジェクトを外部から渡し、10回のルックバックループで再構築を回避
+
 ## ファイル構成
 
 ```

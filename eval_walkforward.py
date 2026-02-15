@@ -67,6 +67,9 @@ name_map = stock_list.set_index("symbol")["name"].to_dict()
 model = None
 results = []
 
+# 日次データを事前にグループ化してO(1)参照可能にする
+date_groups = {date: group for date, group in df.groupby("date")}
+
 for i, test_date in enumerate(test_dates):
     # リトレインするか判定
     if model is None or i % RETRAIN_INTERVAL == 0:
@@ -90,10 +93,10 @@ for i, test_date in enumerate(test_dates):
             categorical_feature=cat_features or "auto",
         )
 
-    # test_dateの予測
-    day_df = df[df["date"] == test_date].copy()
-    if day_df.empty:
+    # test_dateの予測（事前グループ化した辞書からO(1)で取得）
+    if test_date not in date_groups:
         continue
+    day_df = date_groups[test_date].copy()
 
     # 出来高フィルタ
     if "volume" in day_df.columns:
@@ -104,12 +107,12 @@ for i, test_date in enumerate(test_dates):
     proba = model.predict_proba(day_df[feature_cols])[:, 1]
     day_df["proba"] = proba
 
-    # 上昇TOP1
-    up_top = day_df.sort_values("proba", ascending=False).iloc[0]
+    # 上昇TOP1（nlargest/nsmallestでO(n)ヒープ選択）
+    up_top = day_df.nlargest(1, "proba").iloc[0]
     up_conf = up_top["proba"]
 
     # 値下がりTOP1
-    dn_top = day_df.sort_values("proba", ascending=True).iloc[0]
+    dn_top = day_df.nsmallest(1, "proba").iloc[0]
     dn_conf = 1 - dn_top["proba"]
 
     # 統合: 確信度の高い方を採用
@@ -124,12 +127,12 @@ for i, test_date in enumerate(test_dates):
         correct = int(chosen["target"] == 0)
         conf = dn_conf
 
-    # UP/DOWN独立 TOP-N評価用
+    # UP/DOWN独立 TOP-N評価用（nlargest/nsmallestで高速化）
     up_topn_correct = {}
     dn_topn_correct = {}
     for topn in [1, 3, 5]:
-        up_topn = day_df.sort_values("proba", ascending=False).head(topn)
-        dn_topn = day_df.sort_values("proba", ascending=True).head(topn)
+        up_topn = day_df.nlargest(topn, "proba")
+        dn_topn = day_df.nsmallest(topn, "proba")
         up_topn_correct[topn] = (up_topn["target"] == 1).mean()
         dn_topn_correct[topn] = (dn_topn["target"] == 0).mean()
 

@@ -55,3 +55,17 @@ kabu/
 - 追加学習は`lgb.LGBMClassifier.fit(init_model=既存モデル)`で実現
 - eval_walkforward.pyは独自のFAST_PARAMSを持つ（検証高速化のため）
 - 出来高フィルタ（デフォルト10,000）で低流動性銘柄を除外
+
+## 実施済みパフォーマンス最適化
+
+### 第1弾
+- build_dataset二重呼び出し排除（cmd_run内でdataset変数を再利用）
+- compute_individual_features内のgroupbyオブジェクト事前作成・使い回し
+- PCA pivotテーブルのparquetキャッシュ（fit時に保存、predict時は差分追記のみ）
+
+### 第2弾
+- **cmd_run()のparquet再読込排除**: fetch_index_data()/fetch_price_data()の戻り値をそのまま使い、_load_prices()による数百MBの再読込を削除
+- **pd.to_datetime()統合**: 同一カラムへの重複呼び出しを1回に（preprocessor.py, eval_lookback.py）
+- **セクターマッピング最適化**: ネストされた辞書lambdaを事前展開した平坦辞書の.map()に置き換え（preprocessor.py, eval_lookback.py）
+- **eval_walkforward.py日次ループ高速化**: 日次フィルタをgroupby事前辞書化でO(1)参照に、sort_values().head()をnlargest()/nsmallest()に置き換え
+- **eval_lookback.py groupby最適化**: add_lookback_features()のgroupbyオブジェクトを外部から渡して10回のループで使い回し、evaluate_model()の日次ループも事前groupby辞書+nlargest()に置き換え

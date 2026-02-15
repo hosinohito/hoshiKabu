@@ -14,12 +14,17 @@ def predict_all(
     prices: pd.DataFrame,
     stock_list: pd.DataFrame,
     index_data: pd.DataFrame,
+    dataset: pd.DataFrame | None = None,
 ) -> dict:
     """全銘柄の翌日予測を行い、上昇・値下がりランキングと推奨シグナルを返す。"""
     model, feature_cols = load_model()
 
-    logger.info("予測用特徴量を構築中...")
-    df = build_dataset(prices, stock_list, index_data, pca_fit=False)
+    if dataset is not None:
+        logger.info("学習済みデータセットを再利用")
+        df = dataset
+    else:
+        logger.info("予測用特徴量を構築中...")
+        df = build_dataset(prices, stock_list, index_data, pca_fit=False)
 
     latest_date = df["date"].max()
     latest = df[df["date"] == latest_date].copy()

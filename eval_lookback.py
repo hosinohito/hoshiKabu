@@ -67,12 +67,14 @@ def build_base_features(prices_df):
         df = df.merge(pca_factors, on="date", how="left")
 
     # セクター
-    df["sector_code"] = df["symbol"].map(lambda s: sector_map.get(s, {}).get("sector_code", "0"))
+    sector_code_map = {s: v.get("sector_code", "0") for s, v in sector_map.items()}
+    df["sector_code"] = df["symbol"].map(sector_code_map).fillna("0")
     df["sector_encoded"] = le.transform(df["sector_code"].astype(str))
 
     # 曜日・月
-    df["dayofweek"] = pd.to_datetime(df["date"]).dt.dayofweek
-    df["month"] = pd.to_datetime(df["date"]).dt.month
+    dt = pd.to_datetime(df["date"])
+    df["dayofweek"] = dt.dt.dayofweek
+    df["month"] = dt.dt.month
 
     # 前日シフト（rolling用に事前計算）
     intraday_shifted = g["intraday_return"].shift(1)
@@ -82,18 +84,17 @@ def build_base_features(prices_df):
     return df, intraday_shifted, daily_shifted, close_shifted
 
 
-def add_lookback_features(base_df, intraday_shifted, daily_shifted, close_shifted, n):
+def add_lookback_features(base_df, intraday_shifted, daily_shifted, close_shifted, n,
+                          intraday_grp=None, daily_grp=None, close_grp=None):
     """ルックバックn日の3列を追加する（vectorized）。"""
-    sym = base_df["symbol"]
-    base_df[f"intraday_ret_ma{n}"] = intraday_shifted.groupby(
-        sym
-    ).rolling(n, min_periods=1).mean().droplevel(0)
-    base_df[f"volatility_{n}d"] = daily_shifted.groupby(
-        sym
-    ).rolling(n, min_periods=1).std().droplevel(0)
-    close_ma = close_shifted.groupby(
-        sym
-    ).rolling(n, min_periods=1).mean().droplevel(0)
+    if intraday_grp is None:
+        sym = base_df["symbol"]
+        intraday_grp = intraday_shifted.groupby(sym)
+        daily_grp = daily_shifted.groupby(sym)
+        close_grp = close_shifted.groupby(sym)
+    base_df[f"intraday_ret_ma{n}"] = intraday_grp.rolling(n, min_periods=1).mean().droplevel(0)
+    base_df[f"volatility_{n}d"] = daily_grp.rolling(n, min_periods=1).std().droplevel(0)
+    close_ma = close_grp.rolling(n, min_periods=1).mean().droplevel(0)
     base_df[f"ma{n}_deviation"] = base_df["close"] / close_ma - 1
 
 
@@ -138,12 +139,15 @@ def evaluate_model(dataset):
     baseline = test["target"].mean()
 
     results = {"acc": acc, "auc": auc, "baseline": baseline, "n_features": len(feature_cols)}
+    # 日次データを事前グループ化してO(1)参照
+    test_date_groups = {d: g for d, g in test.groupby("date")}
     for top_n in [1, 5, 10, 20]:
         hits = 0
         total = 0
         for d in test_dates:
-            day_df = test[test["date"] == d].sort_values("proba", ascending=False)
-            top = day_df.head(top_n)
+            if d not in test_date_groups:
+                continue
+            top = test_date_groups[d].nlargest(top_n, "proba")
             hits += int(top["target"].sum())
             total += len(top)
         results[f"top{top_n}"] = hits / total if total > 0 else 0
@@ -163,11 +167,18 @@ all_results = []
 print("ベース特徴量を構築中...")
 base_df, intraday_shifted, daily_shifted, close_shifted = build_base_features(prices)
 
+# groupbyオブジェクトを事前作成して全ルックバック日で使い回す
+sym = base_df["symbol"]
+intraday_grp = intraday_shifted.groupby(sym)
+daily_grp = daily_shifted.groupby(sym)
+close_grp = close_shifted.groupby(sym)
+
 for max_day in range(1, 11):
     print(f"--- ルックバック {max_day}日 (特徴量窓: {list(range(1, max_day + 1))}) ---")
 
-    # 新しいルックバック日のみ3列追加
-    add_lookback_features(base_df, intraday_shifted, daily_shifted, close_shifted, max_day)
+    # 新しいルックバック日のみ3列追加（事前作成したgroupbyオブジェクトを再利用）
+    add_lookback_features(base_df, intraday_shifted, daily_shifted, close_shifted, max_day,
+                          intraday_grp=intraday_grp, daily_grp=daily_grp, close_grp=close_grp)
 
     res = evaluate_model(base_df)
     res["lookback"] = max_day
