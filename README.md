@@ -5,7 +5,7 @@
 ## 必要環境
 
 - Python 3.10+
-- CUDA対応GPU（LightGBM GPU版を使用。CPUのみの場合は`config.py`の`device_type`を`"cpu"`に変更）
+- CUDA対応GPU（LightGBM GPU版を使用。CPUのみの場合は下記「CPU環境の場合」を参照）
 - Windows 10/11（開発・検証環境）
 
 ## インストール手順
@@ -38,14 +38,12 @@ pip install lightgbm --install-option=--gpu
 
 ### 4. CPU環境の場合
 
-`config.py`の`LIGHTGBM_PARAMS`から以下の3行を削除またはコメントアウト:
-```python
-"device_type": "gpu",
-"gpu_platform_id": 0,
-"gpu_device_id": 0,
-```
+以下のファイルから `device_type`, `gpu_platform_id`, `gpu_device_id` の3行を削除またはコメントアウトしてください:
 
-同様に`eval_walkforward.py`の`FAST_PARAMS`からも同じ3行を削除してください。
+- `config.py` の `LIGHTGBM_PARAMS`
+- `config.py` の `ENSEMBLE_COMMON_PARAMS`
+- `eval_walkforward.py` の `FAST_PARAMS`
+- `eval_compare.py` の `BASELINE_PARAMS` および `ENSEMBLE_COMMON`
 
 ## 使い方
 
@@ -90,16 +88,6 @@ python main.py run -o ranking.csv
 | `python main.py run` | fetch → 追加学習 → predict のワンショット実行 |
 | `python main.py run -o ranking.csv` | ワンショット実行 + CSV出力 |
 
-### ウォークフォワード検証
-
-モデル精度をデータリークなしで検証:
-
-```bash
-python eval_walkforward.py
-```
-
-テスト期間（後ろ15%）で1日ずつ学習→予測を繰り返し、正解率を算出します。
-
 ## 出力例
 
 ```
@@ -118,9 +106,51 @@ python eval_walkforward.py
   ...
 ```
 
+## 現在の精度
+
+ウォークフォワード検証（2025-03 ~ 2026-02, 224営業日）:
+
+| 戦略 | Baseline | Enhanced |
+|------|----------|----------|
+| 統合戦略 TOP1 | 72.8% | 73.2% (+0.4pp) |
+| 上昇予測 単独 | 46.4% | 48.2% (+1.8pp) |
+| 値下がり予測 単独 | 72.8% | 75.0% (+2.2pp) |
+
+- デフォルト (Baseline) は単一LightGBMモデルによる予測
+- 値下がり予測が主力。上昇予測の精度改善は今後の課題
+- 検証は `eval_compare.py` による同一ループ内での公平比較
+
+> **注**: `eval_walkforward.py` 単体では統合TOP1=74.1% と表示されますが、これは新テクニカル指標の追加前のデータセットでの結果です。`eval_compare.py` の Baseline (72.8%) は新特徴量を含むデータセットから旧特徴量のみを使用しており、NaN行の増減により若干の差異が生じます。
+
+## 検証スクリプト
+
+### eval_walkforward.py — 単体ウォークフォワード検証
+
+```bash
+python eval_walkforward.py
+```
+
+テスト期間（後ろ15%）で5営業日ごとにリトレインし、1日ずつ予測を繰り返して正解率を算出します。
+
+### eval_compare.py — Baseline vs Enhanced 比較検証
+
+```bash
+python eval_compare.py
+```
+
+同一ウォークフォワードループ内で Baseline と Enhanced を同時実行し、公平に比較します。
+
+### eval_lookback.py — ルックバック期間評価
+
+```bash
+python eval_lookback.py
+```
+
+学習データのルックバック期間（何年分のデータで学習するか）の影響を評価します。
+
 ## Enhanced モード（実験的）
 
-`config.py` の `ENHANCED_MODE = True` に変更すると、以下の改善を含む拡張パイプラインが有効になります:
+`config.py` の `ENHANCED_MODE = True` に変更すると、以下の拡張パイプラインが有効になります:
 
 1. **新テクニカル指標**: RSI, MACD, Bollinger Bands, 出来高スパイク, セクター相対強度（7特徴量追加）
 2. **アンサンブル**: パラメータの異なる3つのLightGBMモデルの予測確率を平均
@@ -133,37 +163,7 @@ python eval_walkforward.py
 ENHANCED_MODE = True   # デフォルトは False
 ```
 
-有効化後、通常通り `python main.py train --full` → `python main.py predict` で Enhanced パイプラインが使用されます。
-
-### Enhanced モードの比較検証
-
-`eval_compare.py` で Baseline と Enhanced を同一条件で公平比較できます:
-
-```bash
-python eval_compare.py
-```
-
-### 比較検証結果（2025-03 ~ 2026-02, 224営業日）
-
-| 指標 | Baseline | Enhanced | 差分 |
-|------|----------|----------|------|
-| 統合TOP1 | 72.8% | 73.2% | +0.4pp |
-| 上昇のみ | 46.4% | 48.2% | +1.8pp |
-| 値下がりのみ | 72.8% | 75.0% | +2.2pp |
-
-値下がり予測で +2.2pp の改善。上昇予測も +1.8pp 改善しているものの、依然50%未満。
-
-## 現在の精度
-
-ウォークフォワード検証（2025-03 ~ 2026-02, 224営業日）:
-
-| 戦略 | 正解率 |
-|------|--------|
-| 統合戦略 TOP1 | 74.1% |
-| 値下がり予測 単独 | 74.1% |
-| 上昇予測 単独 | 45.1% |
-
-値下がり予測が主力です。上昇予測の精度改善は今後の課題です。
+有効化後、通常通り `python main.py train --full` → `python main.py predict` で Enhanced パイプラインが使用されます。Enhanced モードのパラメータ（閾値、減衰率、アンサンブル構成等）も `config.py` 内で調整可能です。
 
 ## パフォーマンス最適化
 
@@ -186,17 +186,17 @@ python eval_compare.py
 
 ```
 kabu/
-├── config.py            # 設定値（パラメータ、パス等。ENHANCED_MODE切替）
-├── main.py              # CLIエントリポイント
-├── eval_walkforward.py  # ウォークフォワード検証
+├── config.py            # 設定値（パラメータ、パス、ENHANCED_MODE切替）
+├── main.py              # CLIエントリポイント（Enhanced分岐含む）
+├── eval_walkforward.py  # ウォークフォワード検証（単体）
 ├── eval_compare.py      # Baseline vs Enhanced 比較検証
 ├── eval_lookback.py     # ルックバック期間評価
 ├── requirements.txt     # 依存パッケージ
 ├── src/
 │   ├── fetcher.py       # データ取得（JPX銘柄リスト、yfinance）
-│   ├── preprocessor.py  # 特徴量生成（PCA、市場指数等）
-│   ├── model.py         # モデル学習・保存・追加学習
-│   └── predictor.py     # 予測・ランキング表示
+│   ├── preprocessor.py  # 特徴量生成（PCA、市場指数、テクニカル指標）
+│   ├── model.py         # モデル学習・保存・アンサンブル・キャリブレーション
+│   └── predictor.py     # 予測・ランキング表示（Baseline / Enhanced）
 ├── data/                # 価格データキャッシュ（gitignore対象）
 └── models/              # 学習済みモデル（gitignore対象）
 ```
