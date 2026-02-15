@@ -193,7 +193,7 @@ kabu/
 ├── eval_lookback.py     # ルックバック期間評価
 ├── requirements.txt     # 依存パッケージ
 ├── src/
-│   ├── fetcher.py       # データ取得（JPX銘柄リスト、yfinance）
+│   ├── fetcher.py       # データ取得（JPX銘柄リスト、yfinance。英数字コード対応）
 │   ├── preprocessor.py  # 特徴量生成（PCA、市場指数、テクニカル指標）
 │   ├── model.py         # モデル学習・保存・アンサンブル・キャリブレーション
 │   └── predictor.py     # 予測・ランキング表示（Baseline / Enhanced）

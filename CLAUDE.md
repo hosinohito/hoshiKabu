@@ -14,7 +14,7 @@ kabu/
 ├── eval_lookback.py     # ルックバック期間の評価スクリプト
 ├── requirements.txt
 ├── src/
-│   ├── fetcher.py       # JPX銘柄リスト・yfinance価格取得
+│   ├── fetcher.py       # JPX銘柄リスト・yfinance価格取得（英数字コード対応）
 │   ├── preprocessor.py  # 特徴量生成（個別銘柄・PCA・市場指数）
 │   ├── model.py         # LightGBM学習・保存・追加学習
 │   └── predictor.py     # 全銘柄予測・ランキング表示
@@ -74,6 +74,7 @@ kabu/
 3. **GPU依存**: config.pyの`device_type: "gpu"`が前提。CPU環境では変更が必要
 
 ## 技術的な注意点
+- 銘柄コードは英数字混合に対応（285A, 130A等。2024年以降の東証新コード体系）
 - yfinanceのバッチ取得はスリープ付きリトライ（レート制限対策）
 - PCAモデルは学習時にfit、予測時はtransformのみ（列数不一致時はパディング）
 - 追加学習は`lgb.LGBMClassifier.fit(init_model=既存モデル)`で実現

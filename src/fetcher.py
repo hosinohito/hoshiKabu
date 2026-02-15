@@ -45,8 +45,8 @@ def fetch_stock_list(use_cache: bool = True) -> pd.DataFrame:
         if col not in df.columns:
             raise ValueError(f"必須カラム '{col}' が見つかりません。カラム一覧: {list(df.columns)}")
 
-    # コードが数値の行のみ残す
-    df = df[df["code"].astype(str).str.match(r"^\d+$", na=False)].copy()
+    # コードが数字または英数字混合（285A等）の行のみ残す
+    df = df[df["code"].astype(str).str.match(r"^[0-9A-Za-z]+$", na=False)].copy()
     df["symbol"] = df["code"].astype(str) + ".T"
 
     # セクター情報が無い場合のフォールバック
