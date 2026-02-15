@@ -1,6 +1,7 @@
 """JPX銘柄リスト取得・yfinanceバッチダウンロード・Parquetキャッシュ"""
 import time
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 
 import pandas as pd
@@ -146,20 +147,27 @@ def fetch_price_data(
 
     symbols = stock_list["symbol"].tolist()
     all_data = []
-    total_batches = (len(symbols) + config.YFINANCE_BATCH_SIZE - 1) // config.YFINANCE_BATCH_SIZE
-
+    batches = []
     for i in range(0, len(symbols), config.YFINANCE_BATCH_SIZE):
-        batch = symbols[i : i + config.YFINANCE_BATCH_SIZE]
-        batch_num = i // config.YFINANCE_BATCH_SIZE + 1
-        logger.info(f"バッチ {batch_num}/{total_batches} ({len(batch)}銘柄) ダウンロード中...")
+        batches.append(symbols[i : i + config.YFINANCE_BATCH_SIZE])
+    total_batches = len(batches)
 
+    max_workers = 3
+
+    def _fetch_one(batch_idx: int, batch: list[str]) -> pd.DataFrame:
+        logger.info(f"バッチ {batch_idx+1}/{total_batches} ({len(batch)}銘柄) ダウンロード中...")
         raw = _download_batch(batch, start=start_date, end=end_date)
-        parsed = _parse_batch_data(raw, batch)
-        if not parsed.empty:
-            all_data.append(parsed)
+        return _parse_batch_data(raw, batch)
 
-        if i + config.YFINANCE_BATCH_SIZE < len(symbols):
-            time.sleep(config.YFINANCE_SLEEP_SEC)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_fetch_one, idx, batch): idx
+            for idx, batch in enumerate(batches)
+        }
+        for future in as_completed(futures):
+            parsed = future.result()
+            if not parsed.empty:
+                all_data.append(parsed)
 
     if all_data:
         new_data = pd.concat(all_data, ignore_index=True)
