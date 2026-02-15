@@ -7,9 +7,10 @@ JPX銘柄リスト取得 → yfinanceで価格取得 → 特徴量生成(PCA市�
 ## ディレクトリ構成
 ```
 kabu/
-├── config.py            # 全設定値（パス、パラメータ等）
+├── config.py            # 全設定値（パス、パラメータ、ENHANCED_MODE切替）
 ├── main.py              # CLI（fetch / train / predict / run）
 ├── eval_walkforward.py  # ウォークフォワード検証スクリプト
+├── eval_compare.py      # Baseline vs Enhanced 比較検証スクリプト
 ├── eval_lookback.py     # ルックバック期間の評価スクリプト
 ├── requirements.txt
 ├── src/
@@ -39,14 +40,37 @@ kabu/
   - 上昇: TOP1=45.1%, TOP3=46.4%, TOP5=47.0%
   - 値下がり: TOP1=74.1%, TOP3=68.6%, TOP5=67.5%
 
+## Enhanced モード（実験的）
+`config.py` の `ENHANCED_MODE = True` で以下の拡張パイプラインが有効になる:
+1. **新テクニカル指標 (7列追加)**: RSI, MACD histogram/normalized, Bollinger position/width, volume_spike_ratio, sector_relative_strength
+2. **アンサンブル (3モデル)**: 標準/浅く速く/深く正則化 の3パラメータセットLightGBMの予測確率平均
+3. **確率キャリブレーション**: Isotonic regression でバリデーション確率を補正
+4. **非対称閾値**: `UP_THRESHOLD=0.52`, `DOWN_THRESHOLD=0.55` で方向別に確信度閾値を設定
+5. **サンプル重み付け**: `SAMPLE_WEIGHT_DECAY=0.998` の指数減衰で直近データを重視
+
+### 比較検証結果 (eval_compare.py, 2025-03 ~ 2026-02, 224日)
+| 指標 | Baseline | Enhanced | 差分 |
+|------|----------|----------|------|
+| 統合TOP1 | 72.8% | 73.2% | +0.4pp |
+| 上昇のみ | 46.4% | 48.2% | +1.8pp |
+| 値下がりのみ | 72.8% | 75.0% | +2.2pp |
+
+値下がり単独で +2.2pp 改善。全体は +0.4pp の微改善。一部月(6月, 1月)で悪化傾向あり。
+
+### Enhanced 関連の実装箇所
+- `config.py`: `ENHANCED_MODE`, テクニカル指標パラメータ, アンサンブルパラメータ, 閾値, 重み減衰率
+- `src/preprocessor.py`: `compute_individual_features()` に RSI/MACD/BB/volume_spike 追加, `build_dataset()` に sector_relative_strength 追加
+- `src/model.py`: `compute_sample_weights()`, `train_ensemble()`, `ensemble_predict_proba()`, `fit_calibrator()`, `save_model_enhanced()`, `load_model_enhanced()`
+- `src/predictor.py`: `predict_all_enhanced()`
+- `main.py`: `_train_enhanced()`, cmd_train/cmd_predict/cmd_run で ENHANCED_MODE 分岐
+
 ## 既知の課題・今後の改善候補
 1. **上昇予測の精度が低い**: ターゲット不均衡(DOWN 56.77% vs UP 43.23%)が根本原因。`is_unbalance: True`を追加済みだが効果限定的。確信度比較で依然としてDOWN側が支配的
 2. **改善アプローチ候補**:
    - UP/DOWN別に独立したモデルを学習する
-   - 確率のキャリブレーション（Platt scaling等）を適用する
-   - 確信度閾値を方向別に設定する（例: UP > 0.55, DOWN > 0.60 のように非対称閾値）
    - ターゲット定義の変更（始値→終値ではなく、前日終値→当日終値など）
    - UP予測専用の特徴量エンジニアリング
+   - Enhanced モードの閾値チューニング（現状 UP=0.52, DOWN=0.55）
 3. **GPU依存**: config.pyの`device_type: "gpu"`が前提。CPU環境では変更が必要
 
 ## 技術的な注意点

@@ -13,7 +13,7 @@ import config
 from src.fetcher import fetch_stock_list, fetch_price_data, fetch_index_data
 from src.preprocessor import build_dataset
 from src.model import train_model, load_meta
-from src.predictor import predict_all, display_ranking
+from src.predictor import predict_all, predict_all_enhanced, display_ranking
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +65,51 @@ def cmd_fetch(args: argparse.Namespace) -> None:
     logger.info("=== データ取得完了 ===")
 
 
+def _train_enhanced(dataset: pd.DataFrame) -> None:
+    """Enhanced モードの学習: アンサンブル3モデル + キャリブレーション。"""
+    from src.model import (
+        compute_sample_weights, train_ensemble, fit_calibrator,
+        ensemble_predict_proba, save_model_enhanced,
+    )
+    from src.preprocessor import get_feature_columns
+    import numpy as np
+
+    feature_cols = get_feature_columns(dataset)
+    df = dataset.dropna(subset=["target"]).copy()
+    df["target"] = df["target"].astype(int)
+
+    cat_features = [c for c in feature_cols if c in ("sector_encoded", "dayofweek", "month")]
+
+    dates = np.sort(df["date"].unique())
+    n = len(dates)
+    calib_start = dates[int(n * config.TRAIN_RATIO)]
+    valid_start = dates[int(n * (config.TRAIN_RATIO + 0.05))]
+    test_start = dates[int(n * (config.TRAIN_RATIO + config.VALID_RATIO))]
+
+    train_data = df[df["date"] <= calib_start]
+    calib_data = df[(df["date"] > calib_start) & (df["date"] <= valid_start)]
+    valid_data = df[(df["date"] > valid_start) & (df["date"] <= test_start)]
+
+    if calib_data.empty:
+        calib_data = valid_data.head(max(1, len(valid_data) // 2))
+
+    weights = compute_sample_weights(train_data["date"].values)
+
+    logger.info("アンサンブルモデル学習中...")
+    models = train_ensemble(
+        train_data[feature_cols], train_data["target"],
+        valid_data[feature_cols], valid_data["target"],
+        cat_features, sample_weights=weights,
+    )
+
+    logger.info("キャリブレーション学習中...")
+    calib_proba = ensemble_predict_proba(models, calib_data[feature_cols])
+    calibrator = fit_calibrator(calib_proba, calib_data["target"].values)
+
+    save_model_enhanced(models, calibrator, feature_cols)
+    logger.info("Enhanced モデル学習完了")
+
+
 def cmd_train(args: argparse.Namespace) -> None:
     """モデルを学習する。"""
     incremental = not args.full
@@ -82,8 +127,12 @@ def cmd_train(args: argparse.Namespace) -> None:
     logger.info("データセット構築中...")
     dataset = build_dataset(prices, stock_list, index_data, pca_fit=True)
 
-    logger.info("モデル学習中...")
-    train_model(dataset, incremental=incremental)
+    if config.ENHANCED_MODE:
+        logger.info("Enhanced モードで学習...")
+        _train_enhanced(dataset)
+    else:
+        logger.info("モデル学習中...")
+        train_model(dataset, incremental=incremental)
 
     logger.info(f"=== モデル{mode}完了 ===")
 
@@ -95,7 +144,10 @@ def cmd_predict(args: argparse.Namespace) -> None:
     stock_list = fetch_stock_list()
     prices, index_data = _load_prices()
 
-    result = predict_all(prices, stock_list, index_data)
+    if config.ENHANCED_MODE:
+        result = predict_all_enhanced(prices, stock_list, index_data)
+    else:
+        result = predict_all(prices, stock_list, index_data)
     display_ranking(result, top_n=args.top)
 
     if args.output:
@@ -128,11 +180,17 @@ def cmd_run(args: argparse.Namespace) -> None:
     print(f"学習モード: {mode}")
 
     dataset = build_dataset(prices, stock_list, index_data, pca_fit=True)
-    train_model(dataset, incremental=incremental)
+    if config.ENHANCED_MODE:
+        _train_enhanced(dataset)
+    else:
+        train_model(dataset, incremental=incremental)
 
     # 3. 予測（学習時のdatasetを再利用してbuild_datasetの二重呼び出しを回避）
     logger.info("--- [3/3] 予測・ランキング ---")
-    result = predict_all(prices, stock_list, index_data, dataset=dataset)
+    if config.ENHANCED_MODE:
+        result = predict_all_enhanced(prices, stock_list, index_data, dataset=dataset)
+    else:
+        result = predict_all(prices, stock_list, index_data, dataset=dataset)
     display_ranking(result, top_n=args.top)
 
     if args.output:

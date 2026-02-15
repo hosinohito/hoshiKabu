@@ -1,10 +1,11 @@
 """全銘柄一括予測→ランキング出力（上昇・値下がり統合戦略）"""
 import logging
 
+import numpy as np
 import pandas as pd
 
 import config
-from src.model import load_model
+from src.model import load_model, load_model_enhanced, ensemble_predict_proba
 from src.preprocessor import build_dataset, get_feature_columns
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,100 @@ def predict_all(
     dn_top1_conf = filtered["down_probability"].max()
 
     if up_top1_conf >= dn_top1_conf:
+        signal = {
+            "direction": "UP",
+            "confidence": up_top1_conf,
+            "symbol": up_ranking.iloc[0]["symbol"],
+            "name": up_ranking.iloc[0]["name"],
+        }
+    else:
+        signal = {
+            "direction": "DOWN",
+            "confidence": dn_top1_conf,
+            "symbol": down_ranking.iloc[0]["symbol"],
+            "name": down_ranking.iloc[0]["name"],
+        }
+
+    return {"up": up_ranking, "down": down_ranking, "signal": signal}
+
+
+def predict_all_enhanced(
+    prices: pd.DataFrame,
+    stock_list: pd.DataFrame,
+    index_data: pd.DataFrame,
+    dataset: pd.DataFrame | None = None,
+) -> dict:
+    """アンサンブル+キャリブレーション+非対称閾値による予測。"""
+    models, calibrator, feature_cols = load_model_enhanced()
+
+    if dataset is not None:
+        df = dataset
+    else:
+        df = build_dataset(prices, stock_list, index_data, pca_fit=False)
+
+    latest_date = df["date"].max()
+    latest = df[df["date"] == latest_date].copy()
+    logger.info(f"Enhanced予測対象日: {latest_date}, 銘柄数: {len(latest)}")
+
+    if latest.empty:
+        return {"up": pd.DataFrame(), "down": pd.DataFrame(), "signal": None}
+
+    for col in feature_cols:
+        if col not in latest.columns:
+            latest[col] = 0
+    X = latest[feature_cols]
+
+    # アンサンブル平均 → キャリブレーション
+    raw_proba = ensemble_predict_proba(models, X)
+    calibrated = calibrator.predict(raw_proba)
+    latest["up_probability"] = calibrated
+    latest["down_probability"] = 1 - calibrated
+
+    # 出来高フィルタ
+    if "volume" in latest.columns:
+        filtered = latest[latest["volume"] >= config.VOLUME_THRESHOLD].copy()
+    else:
+        filtered = latest.copy()
+
+    # 銘柄情報
+    name_map = stock_list.set_index("symbol")["name"].to_dict()
+    sector_map = stock_list.set_index("symbol")["sector_name"].to_dict()
+    filtered["name"] = filtered["symbol"].map(name_map)
+    filtered["sector"] = filtered["symbol"].map(sector_map)
+
+    keep_cols = [c for c in ["symbol", "name", "sector", "up_probability", "down_probability", "volume"]
+                 if c in filtered.columns]
+
+    up_ranking = filtered[keep_cols].sort_values("up_probability", ascending=False).reset_index(drop=True)
+    up_ranking.index = up_ranking.index + 1
+    up_ranking.index.name = "順位"
+
+    down_ranking = filtered[keep_cols].sort_values("down_probability", ascending=False).reset_index(drop=True)
+    down_ranking.index = down_ranking.index + 1
+    down_ranking.index.name = "順位"
+
+    # 非対称閾値による統合シグナル
+    up_top1_conf = filtered["up_probability"].max()
+    dn_top1_conf = filtered["down_probability"].max()
+
+    up_passes = up_top1_conf >= config.UP_THRESHOLD
+    dn_passes = dn_top1_conf >= config.DOWN_THRESHOLD
+
+    if up_passes and dn_passes:
+        # 両方閾値超え → 確信度の高い方を採用
+        if up_top1_conf >= dn_top1_conf:
+            direction = "UP"
+        else:
+            direction = "DOWN"
+    elif up_passes:
+        direction = "UP"
+    elif dn_passes:
+        direction = "DOWN"
+    else:
+        # どちらも閾値未満 → 確信度の高い方
+        direction = "UP" if up_top1_conf >= dn_top1_conf else "DOWN"
+
+    if direction == "UP":
         signal = {
             "direction": "UP",
             "confidence": up_top1_conf,

@@ -118,6 +118,41 @@ python eval_walkforward.py
   ...
 ```
 
+## Enhanced モード（実験的）
+
+`config.py` の `ENHANCED_MODE = True` に変更すると、以下の改善を含む拡張パイプラインが有効になります:
+
+1. **新テクニカル指標**: RSI, MACD, Bollinger Bands, 出来高スパイク, セクター相対強度（7特徴量追加）
+2. **アンサンブル**: パラメータの異なる3つのLightGBMモデルの予測確率を平均
+3. **確率キャリブレーション**: Isotonic regression で確率を補正
+4. **非対称閾値**: UP/DOWN方向で異なる確信度閾値（`UP_THRESHOLD`, `DOWN_THRESHOLD`）
+5. **サンプル重み付け**: 指数減衰で直近データを重視
+
+```python
+# config.py を編集
+ENHANCED_MODE = True   # デフォルトは False
+```
+
+有効化後、通常通り `python main.py train --full` → `python main.py predict` で Enhanced パイプラインが使用されます。
+
+### Enhanced モードの比較検証
+
+`eval_compare.py` で Baseline と Enhanced を同一条件で公平比較できます:
+
+```bash
+python eval_compare.py
+```
+
+### 比較検証結果（2025-03 ~ 2026-02, 224営業日）
+
+| 指標 | Baseline | Enhanced | 差分 |
+|------|----------|----------|------|
+| 統合TOP1 | 72.8% | 73.2% | +0.4pp |
+| 上昇のみ | 46.4% | 48.2% | +1.8pp |
+| 値下がりのみ | 72.8% | 75.0% | +2.2pp |
+
+値下がり予測で +2.2pp の改善。上昇予測も +1.8pp 改善しているものの、依然50%未満。
+
 ## 現在の精度
 
 ウォークフォワード検証（2025-03 ~ 2026-02, 224営業日）:
@@ -151,9 +186,10 @@ python eval_walkforward.py
 
 ```
 kabu/
-├── config.py            # 設定値（パラメータ、パス等）
+├── config.py            # 設定値（パラメータ、パス等。ENHANCED_MODE切替）
 ├── main.py              # CLIエントリポイント
 ├── eval_walkforward.py  # ウォークフォワード検証
+├── eval_compare.py      # Baseline vs Enhanced 比較検証
 ├── eval_lookback.py     # ルックバック期間評価
 ├── requirements.txt     # 依存パッケージ
 ├── src/

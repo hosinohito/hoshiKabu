@@ -54,6 +54,45 @@ def compute_individual_features(prices: pd.DataFrame) -> pd.DataFrame:
         vol_ma5 = vol_grp.rolling(5, min_periods=1).mean().droplevel(0)
         df["volume_ma5_ratio"] = df["volume"] / vol_ma5
 
+    # --- 新テクニカル指標 (shift(1)済みcloseで計算しリーク回避) ---
+
+    # RSI (14日)
+    close_diff = close_shifted.groupby(df["symbol"]).diff()
+    gain = close_diff.clip(lower=0)
+    loss = (-close_diff).clip(lower=0)
+    avg_gain = gain.groupby(df["symbol"]).rolling(config.RSI_PERIOD, min_periods=1).mean().droplevel(0)
+    avg_loss = loss.groupby(df["symbol"]).rolling(config.RSI_PERIOD, min_periods=1).mean().droplevel(0)
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    df["rsi"] = 100 - 100 / (1 + rs)
+
+    # MACD (shift(1)済みcloseベース)
+    ema_fast = close_shifted.groupby(df["symbol"]).transform(
+        lambda x: x.ewm(span=config.MACD_FAST, min_periods=1).mean()
+    )
+    ema_slow = close_shifted.groupby(df["symbol"]).transform(
+        lambda x: x.ewm(span=config.MACD_SLOW, min_periods=1).mean()
+    )
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.groupby(df["symbol"]).transform(
+        lambda x: x.ewm(span=config.MACD_SIGNAL, min_periods=1).mean()
+    )
+    df["macd_histogram"] = macd_line - signal_line
+    df["macd_normalized"] = df["macd_histogram"] / close_shifted.replace(0, np.nan)
+
+    # Bollinger Bands (shift(1)済みcloseベース)
+    bb_ma = close_grp.rolling(config.BOLLINGER_PERIOD, min_periods=1).mean().droplevel(0)
+    bb_std = close_grp.rolling(config.BOLLINGER_PERIOD, min_periods=1).std().droplevel(0)
+    bb_upper = bb_ma + config.BOLLINGER_STD * bb_std
+    bb_lower = bb_ma - config.BOLLINGER_STD * bb_std
+    bb_width = bb_upper - bb_lower
+    df["bollinger_position"] = (close_shifted - bb_lower) / bb_width.replace(0, np.nan)
+    df["bollinger_width"] = bb_width / bb_ma.replace(0, np.nan)
+
+    # 出来高スパイク (shift(1)済みvolumeベース)
+    if "volume" in df.columns:
+        vol_spike_ma = vol_grp.rolling(config.VOLUME_SPIKE_WINDOW, min_periods=1).mean().droplevel(0)
+        df["volume_spike_ratio"] = vol_shifted / vol_spike_ma.replace(0, np.nan)
+
     return df
 
 
@@ -203,6 +242,12 @@ def build_dataset(
         config.DATA_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
         with open(config.DATA_PROCESSED_DIR / "label_encoder.pkl", "wb") as f:
             pickle.dump(le, f)
+
+    # セクター相対強度 (shift(1)済みdaily_returnベース)
+    if "sector_code" in df.columns and "daily_return" in df.columns:
+        shifted_ret = df.groupby("symbol")["daily_return"].shift(1)
+        sector_mean = shifted_ret.groupby(df["sector_code"]).transform("mean")
+        df["sector_relative_strength"] = shifted_ret - sector_mean
 
     # 曜日・月
     dt = pd.to_datetime(df["date"])

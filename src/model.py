@@ -7,6 +7,7 @@ from datetime import datetime
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
+from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import accuracy_score, log_loss, roc_auc_score
 
 import config
@@ -201,3 +202,89 @@ def load_model() -> tuple[lgb.LGBMClassifier, list[str]]:
     with open(model_path, "rb") as f:
         data = pickle.load(f)
     return data["model"], data["feature_cols"]
+
+
+# === Enhanced (アンサンブル・キャリブレーション) ===
+
+
+def compute_sample_weights(dates: np.ndarray, decay: float = None) -> np.ndarray:
+    """指数減衰によるサンプル重みを計算する。最新日=1.0, 過去ほど小さい。"""
+    decay = decay or config.SAMPLE_WEIGHT_DECAY
+    unique_dates = np.sort(np.unique(dates))
+    date_to_idx = {d: i for i, d in enumerate(unique_dates)}
+    max_idx = len(unique_dates) - 1
+    indices = np.array([date_to_idx[d] for d in dates])
+    weights = decay ** (max_idx - indices)
+    return weights
+
+
+def train_ensemble(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    X_valid: pd.DataFrame,
+    y_valid: pd.Series,
+    cat_features: list[str],
+    sample_weights: np.ndarray | None = None,
+    ensemble_params: list[dict] | None = None,
+    common_params: dict | None = None,
+) -> list[lgb.LGBMClassifier]:
+    """アンサンブル用の複数LightGBMモデルを学習する。"""
+    common = common_params or config.ENSEMBLE_COMMON_PARAMS
+    model_configs = ensemble_params or config.ENSEMBLE_MODELS
+    models = []
+
+    for i, params in enumerate(model_configs):
+        merged = {**common, **params}
+        model = lgb.LGBMClassifier(**merged)
+        model.fit(
+            X_train, y_train,
+            eval_set=[(X_valid, y_valid)],
+            eval_metric="binary_logloss",
+            callbacks=[lgb.log_evaluation(period=999), lgb.early_stopping(stopping_rounds=20)],
+            categorical_feature=cat_features or "auto",
+            sample_weight=sample_weights,
+        )
+        models.append(model)
+        logger.info(f"アンサンブルモデル {i+1}/{len(model_configs)} 学習完了")
+
+    return models
+
+
+def ensemble_predict_proba(models: list[lgb.LGBMClassifier], X: pd.DataFrame) -> np.ndarray:
+    """アンサンブルモデルの予測確率平均を返す。"""
+    probas = np.column_stack([m.predict_proba(X)[:, 1] for m in models])
+    return probas.mean(axis=1)
+
+
+def fit_calibrator(
+    raw_proba: np.ndarray, y_true: np.ndarray, method: str = None
+) -> IsotonicRegression:
+    """Isotonic regressionでキャリブレーターを学習する。"""
+    method = method or config.CALIBRATION_METHOD
+    calibrator = IsotonicRegression(y_min=0, y_max=1, out_of_bounds="clip")
+    calibrator.fit(raw_proba, y_true)
+    logger.info("キャリブレーター学習完了")
+    return calibrator
+
+
+def save_model_enhanced(
+    models: list[lgb.LGBMClassifier],
+    calibrator: IsotonicRegression,
+    feature_cols: list[str],
+) -> None:
+    """アンサンブルモデル+キャリブレーターを保存する。"""
+    config.MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    path = config.MODELS_DIR / "lgbm_enhanced.pkl"
+    with open(path, "wb") as f:
+        pickle.dump({"models": models, "calibrator": calibrator, "feature_cols": feature_cols}, f)
+    logger.info(f"Enhanced モデル保存: {path}")
+
+
+def load_model_enhanced() -> tuple[list[lgb.LGBMClassifier], IsotonicRegression, list[str]]:
+    """アンサンブルモデル+キャリブレーターを読み込む。"""
+    path = config.MODELS_DIR / "lgbm_enhanced.pkl"
+    if not path.exists():
+        raise FileNotFoundError("Enhanced モデルが見つかりません。")
+    with open(path, "rb") as f:
+        data = pickle.load(f)
+    return data["models"], data["calibrator"], data["feature_cols"]
