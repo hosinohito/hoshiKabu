@@ -15,9 +15,9 @@ kabu/
 ├── requirements.txt
 ├── src/
 │   ├── fetcher.py       # JPX銘柄リスト・yfinance価格取得（英数字コード対応）
-│   ├── preprocessor.py  # 特徴量生成（個別銘柄・PCA・市場指数）
-│   ├── model.py         # LightGBM学習・保存・追加学習
-│   └── predictor.py     # 全銘柄予測・ランキング表示
+│   ├── preprocessor.py  # 特徴量生成（個別銘柄・PCA・市場指数・テクニカル指標）
+│   ├── model.py         # LightGBM学習・保存・追加学習・アンサンブル・キャリブレーション
+│   └── predictor.py     # 全銘柄予測・ランキング表示（Baseline / Enhanced）
 ├── data/
 │   ├── raw/             # prices.parquet, index_prices.parquet, stock_list.parquet
 │   └── processed/       # pca_model.pkl, label_encoder.pkl
@@ -27,7 +27,7 @@ kabu/
 
 ## アーキテクチャ
 - **ターゲット**: 翌日 始値→終値 が上昇なら1（UP）、下落なら0（DOWN）
-- **特徴量**: 個別銘柄リターン系(MA, ボラティリティ, 乖離率) + 出来高系 + PCA市場ファクター(50成分) + 市場指数(日経225/TOPIX) + セクター + 曜日/月
+- **特徴量**: 個別銘柄リターン系(MA, ボラティリティ, 乖離率) + テクニカル指標(RSI, MACD, BB) + 出来高系 + PCA市場ファクター(50成分) + 市場指数(日経225/TOPIX) + セクター + 曜日/月
 - **モデル**: LightGBM binary classification（GPU対応）
 - **追加学習**: 既存モデルをinit_modelとして、前回学習日以降のデータで継続学習
 - **予測**: 上昇確率と値下がり確率(=1-上昇確率)を比較し、確信度の高い方向の銘柄を推奨
@@ -76,6 +76,7 @@ kabu/
 ## 技術的な注意点
 - 銘柄コードは英数字混合に対応（285A, 130A等。2024年以降の東証新コード体系）
 - yfinanceのバッチ取得はスリープ付きリトライ（レート制限対策）
+- yfinance 1.1.0では`threads=True`で`dictionary changed size during iteration`エラーが多発するため`threads=False`+逐次実行（`max_workers=1`）で安定動作させている
 - PCAモデルは学習時にfit、予測時はtransformのみ（列数不一致時はパディング）
 - 追加学習は`lgb.LGBMClassifier.fit(init_model=既存モデル)`で実現
 - eval_walkforward.pyは独自のFAST_PARAMSを持つ（検証高速化のため）
