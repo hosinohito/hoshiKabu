@@ -206,6 +206,12 @@ def build_dataset(
     pca_fit: bool = True,
 ) -> pd.DataFrame:
     """全特徴量を結合してデータセットを構築する。"""
+    # ルックバック期間で絞り込み（メモリ削減）
+    if config.TRAIN_LOOKBACK_YEARS is not None:
+        cutoff = pd.Timestamp.now() - pd.DateOffset(years=config.TRAIN_LOOKBACK_YEARS)
+        prices = prices[pd.to_datetime(prices["date"]) >= cutoff]
+        logger.info(f"学習データを直近{config.TRAIN_LOOKBACK_YEARS}年に絞り込み: {len(prices)}行")
+
     logger.info("個別銘柄特徴量を生成中...")
     df = compute_individual_features(prices)
 
@@ -254,7 +260,12 @@ def build_dataset(
     df["dayofweek"] = dt.dt.dayofweek
     df["month"] = dt.dt.month
 
-    logger.info(f"データセット構築完了: {len(df)}行, {df['symbol'].nunique()}銘柄")
+    # float64 → float32 でメモリ使用量を約50%削減
+    float_cols = df.select_dtypes(include="float64").columns
+    df[float_cols] = df[float_cols].astype("float32")
+
+    logger.info(f"データセット構築完了: {len(df)}行, {df['symbol'].nunique()}銘柄, "
+                f"メモリ={df.memory_usage(deep=True).sum() / 1024**3:.2f}GB")
     return df
 
 

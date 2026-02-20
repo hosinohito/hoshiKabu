@@ -24,6 +24,10 @@ JPX_LIST_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq000
 NIKKEI225_SYMBOL = "^N225"
 TOPIX_SYMBOL = "1306.T"  # TOPIX連動ETFで代替
 
+# 学習データの最大期間 (年数)。None で全期間使用。メモリ不足時は 3 に設定
+# 3年 ≒ 750日分 × 4434銘柄 ≒ 約3.3M行（全期間5.8M行の57%削減）
+TRAIN_LOOKBACK_YEARS = 3
+
 # 特徴量パラメータ
 LOOKBACK_DAYS = [1, 2, 3, 4, 5, 6]
 PCA_N_COMPONENTS = 50

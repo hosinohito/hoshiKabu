@@ -95,3 +95,8 @@ kabu/
 - **セクターマッピング最適化**: ネストされた辞書lambdaを事前展開した平坦辞書の.map()に置き換え（preprocessor.py, eval_lookback.py）
 - **eval_walkforward.py日次ループ高速化**: 日次フィルタをgroupby事前辞書化でO(1)参照に、sort_values().head()をnlargest()/nsmallest()に置き換え
 - **eval_lookback.py groupby最適化**: add_lookback_features()のgroupbyオブジェクトを外部から渡して10回のループで使い回し、evaluate_model()の日次ループも事前groupby辞書+nlargest()に置き換え
+
+### 第3弾: メモリ使用量削減
+- **TRAIN_LOOKBACK_YEARS = 3**: build_dataset()の冒頭で直近3年に絞り込み（全期間5.8M行 → 約3.1M行、46%削減）。Noneで全期間使用
+- **float32変換**: build_dataset()完了後に全float64をfloat32に変換（値あたりのメモリ50%削減）
+- **効果**: データセット ~3.5GB → 1.19GB（66%削減）。16GB RAM環境でのOOMフリーズを解消

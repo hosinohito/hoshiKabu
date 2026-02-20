@@ -182,6 +182,11 @@ ENHANCED_MODE = True   # デフォルトは False
 - **nlargest/nsmallest化**: `sort_values().head()` を `nlargest()`/`nsmallest()` に置き換え、O(n log n) → O(n) ヒープ選択に改善
 - **eval_lookback.py groupby使い回し**: `add_lookback_features()`のgroupbyオブジェクトを外部から渡し、10回のルックバックループで再構築を回避
 
+### 第3弾: メモリ使用量削減（66%削減）
+- **学習データのルックバック制限**: `TRAIN_LOOKBACK_YEARS = 3`（config.py）で特徴量生成前に直近3年分に絞り込み。全期間5.8M行 → 約3.1M行（約46%削減）。`None`に設定すると全期間使用
+- **float64 → float32変換**: `build_dataset()`完了後に全float64カラムをfloat32に変換。値あたりのメモリを50%削減
+- **効果**: データセットのメモリが約3.5GB → 1.19GB（66%削減）。16GB RAM環境でのOOMフリーズを解消
+
 ## ファイル構成
 
 ```
