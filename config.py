@@ -12,7 +12,7 @@ DATA_PROCESSED_DIR = BASE_DIR / "data" / "processed"
 MODELS_DIR = BASE_DIR / "models"
 
 # データ取得
-YFINANCE_BATCH_SIZE = 100  # yfinance 1.1.0では500だとエラー多発するため縮小
+YFINANCE_BATCH_SIZE = 300  # threads=False化でスレッド競合が解消されたため300に拡大
 YFINANCE_SLEEP_SEC = 1.0
 YFINANCE_MAX_RETRIES = 3
 DATA_START_DATE = "2020-01-01"

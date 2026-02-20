@@ -152,7 +152,8 @@ def fetch_price_data(
         batches.append(symbols[i : i + config.YFINANCE_BATCH_SIZE])
     total_batches = len(batches)
 
-    max_workers = 1  # yfinance 1.1.0ではスレッド競合を避けるため逐次実行
+    # threads=False化により各yf.download()は独立した同期処理になったため並列安全
+    max_workers = 3
 
     def _fetch_one(batch_idx: int, batch: list[str]) -> pd.DataFrame:
         logger.info(f"バッチ {batch_idx+1}/{total_batches} ({len(batch)}銘柄) ダウンロード中...")

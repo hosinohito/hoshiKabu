@@ -50,7 +50,7 @@ pip install lightgbm --install-option=--gpu
 ### 初回セットアップ（データ取得 → フル学習 → 予測）
 
 ```bash
-# 1. 全銘柄の価格データを取得（約20分、約4400銘柄）
+# 1. 全銘柄の価格データを取得（約3分、約4400銘柄）
 python main.py fetch
 
 # 2. モデルをゼロからフル学習

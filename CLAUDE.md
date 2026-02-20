@@ -76,7 +76,7 @@ kabu/
 ## 技術的な注意点
 - 銘柄コードは英数字混合に対応（285A, 130A等。2024年以降の東証新コード体系）
 - yfinanceのバッチ取得はスリープ付きリトライ（レート制限対策）
-- yfinance 1.1.0では`threads=True`で`dictionary changed size during iteration`エラーが多発するため`threads=False`+逐次実行（`max_workers=1`）で安定動作させている
+- yfinance 1.1.0では`threads=True`で`dictionary changed size during iteration`エラーが多発するため`threads=False`を設定。`threads=False`化により各`yf.download()`は独立した同期処理になるため、外部からの並列呼び出し（`max_workers=3`）は安全。バッチサイズも100→300に拡大（45バッチ→5並列ラウンド≈9x高速化）
 - PCAモデルは学習時にfit、予測時はtransformのみ（列数不一致時はパディング）
 - 追加学習は`lgb.LGBMClassifier.fit(init_model=既存モデル)`で実現
 - eval_walkforward.pyは独自のFAST_PARAMSを持つ（検証高速化のため）
