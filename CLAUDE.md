@@ -81,6 +81,7 @@ kabu/
 - 追加学習は`lgb.LGBMClassifier.fit(init_model=既存モデル)`で実現
 - eval_walkforward.pyは独自のFAST_PARAMSを持つ（検証高速化のため）
 - 出来高フィルタ（デフォルト10,000）で低流動性銘柄を除外
+- 6576.T（揚工舎、PRO Market・サービス業）のみ yfinance に `Quote not found` でデータなし。他の162銘柄を含む全市場で唯一の未取得。Yahoo Finance 側の未登録のため対処不可（予測精度への影響は無視できるレベル）
 
 ## 実施済みパフォーマンス最適化
 
@@ -100,3 +101,8 @@ kabu/
 - **TRAIN_LOOKBACK_YEARS = 3**: build_dataset()の冒頭で直近3年に絞り込み（全期間5.8M行 → 約3.1M行、46%削減）。Noneで全期間使用
 - **float32変換**: build_dataset()完了後に全float64をfloat32に変換（値あたりのメモリ50%削減）
 - **効果**: データセット ~3.5GB → 1.19GB（66%削減）。16GB RAM環境でのOOMフリーズを解消
+
+### 第4弾: ダウンロード高速化
+- **YFINANCE_BATCH_SIZE = 300**: threads=False化でスレッド競合解消済みのためバッチ100→300に拡大（45バッチ→15バッチ）
+- **max_workers = 3**: 各yf.download(threads=False)は独立したセッションで並列安全。外部3並列呼び出しを有効化
+- **効果**: 39分 → 6分（実測6.7倍速）。45バッチ×逐次 → 15バッチ×3並列=5ラウンド
