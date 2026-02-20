@@ -104,7 +104,7 @@ for i, test_date in enumerate(test_dates):
     if day_df.empty:
         continue
 
-    proba = model.predict_proba(day_df[feature_cols])[:, 1]
+    proba = model.predict_proba(day_df[feature_cols].fillna(0))[:, 1]
     day_df["proba"] = proba
 
     # 上昇TOP1（nlargest/nsmallestでO(n)ヒープ選択）

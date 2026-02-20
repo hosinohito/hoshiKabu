@@ -11,6 +11,13 @@ from src.preprocessor import build_dataset, get_feature_columns
 logger = logging.getLogger(__name__)
 
 
+def _align_features(df: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
+    missing = [c for c in feature_cols if c not in df.columns]
+    for col in missing:
+        df[col] = 0
+    return df[feature_cols].fillna(0)
+
+
 def predict_all(
     prices: pd.DataFrame,
     stock_list: pd.DataFrame,
@@ -36,10 +43,7 @@ def predict_all(
         return {"up": pd.DataFrame(), "down": pd.DataFrame(), "signal": None}
 
     # 特徴量の整合性
-    for col in feature_cols:
-        if col not in latest.columns:
-            latest[col] = 0
-    X = latest[feature_cols]
+    X = _align_features(latest.copy(), feature_cols)
 
     proba = model.predict_proba(X)[:, 1]
     latest["up_probability"] = proba
@@ -124,10 +128,7 @@ def predict_all_enhanced(
     if latest.empty:
         return {"up": pd.DataFrame(), "down": pd.DataFrame(), "signal": None}
 
-    for col in feature_cols:
-        if col not in latest.columns:
-            latest[col] = 0
-    X = latest[feature_cols]
+    X = _align_features(latest.copy(), feature_cols)
 
     # アンサンブル平均 → キャリブレーション
     raw_proba = ensemble_predict_proba(models, X)

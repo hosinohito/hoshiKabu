@@ -64,6 +64,14 @@ def _evaluate(model, X, y, label: str) -> None:
     print(f"[{label}] Accuracy={acc:.4f}, AUC={auc:.4f}, LogLoss={ll:.4f}")
 
 
+def _align_feature_columns(df: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
+    """不足列は0埋めし、余剰列は無視して整形する。"""
+    missing = [c for c in feature_cols if c not in df.columns]
+    for col in missing:
+        df[col] = 0
+    return df[feature_cols]
+
+
 def train_model(df: pd.DataFrame, incremental: bool = False) -> lgb.LGBMClassifier:
     """LightGBMモデルを学習する。
 
@@ -83,6 +91,11 @@ def train_model(df: pd.DataFrame, incremental: bool = False) -> lgb.LGBMClassifi
     # --- 追加学習モード ---
     if incremental:
         existing_model, existing_cols = load_model()
+        if set(existing_cols) != set(feature_cols):
+            logger.warning(
+                "既存モデルと特徴量が不一致のため、既存モデルの特徴量に合わせます。"
+            )
+        feature_cols = existing_cols
         meta = load_meta()
         last_date = meta["last_train_date"] if meta else None
 
@@ -110,10 +123,14 @@ def train_model(df: pd.DataFrame, incremental: bool = False) -> lgb.LGBMClassifi
         if valid_part.empty:
             valid_part = train_part.tail(max(1, len(train_part) // 5))
 
-        X_train = train_part[feature_cols]
+        X_train = _align_feature_columns(train_part.copy(), feature_cols)
         y_train = train_part["target"]
-        X_valid = valid_part[feature_cols]
+        X_valid = _align_feature_columns(valid_part.copy(), feature_cols)
         y_valid = valid_part["target"]
+
+        # 欠損や新旧特徴量の差分を吸収
+        X_train = X_train.fillna(0)
+        X_valid = X_valid.fillna(0)
 
         # 既存モデルのBoosterをinit_modelとして渡して継続学習
         inc_params = {
@@ -147,12 +164,16 @@ def train_model(df: pd.DataFrame, incremental: bool = False) -> lgb.LGBMClassifi
     # --- フル学習モード ---
     train, valid, test = time_series_split(df)
 
-    X_train = train[feature_cols]
+    X_train = _align_feature_columns(train.copy(), feature_cols)
     y_train = train["target"]
-    X_valid = valid[feature_cols]
+    X_valid = _align_feature_columns(valid.copy(), feature_cols)
     y_valid = valid["target"]
-    X_test = test[feature_cols]
+    X_test = _align_feature_columns(test.copy(), feature_cols)
     y_test = test["target"]
+
+    X_train = X_train.fillna(0)
+    X_valid = X_valid.fillna(0)
+    X_test = X_test.fillna(0)
 
     model = lgb.LGBMClassifier(**config.LIGHTGBM_PARAMS)
 

@@ -126,6 +126,23 @@ def _parse_batch_data(raw: pd.DataFrame, symbols: list[str]) -> pd.DataFrame:
     return result
 
 
+def _retry_missing_symbols(
+    parsed: pd.DataFrame, symbols: list[str], start: str, end: str | None
+) -> pd.DataFrame:
+    parsed_symbols = set(parsed["symbol"].unique()) if not parsed.empty else set()
+    missing = [s for s in symbols if s not in parsed_symbols]
+    if not missing:
+        return parsed
+    logger.warning(f"欠損銘柄を再取得: {len(missing)}銘柄")
+    retry_raw = _download_batch(missing, start=start, end=end)
+    retry_parsed = _parse_batch_data(retry_raw, missing)
+    if parsed.empty:
+        return retry_parsed
+    if retry_parsed.empty:
+        return parsed
+    return pd.concat([parsed, retry_parsed], ignore_index=True)
+
+
 def fetch_price_data(
     stock_list: pd.DataFrame,
     start_date: str | None = None,
@@ -158,7 +175,8 @@ def fetch_price_data(
     def _fetch_one(batch_idx: int, batch: list[str]) -> pd.DataFrame:
         logger.info(f"バッチ {batch_idx+1}/{total_batches} ({len(batch)}銘柄) ダウンロード中...")
         raw = _download_batch(batch, start=start_date, end=end_date)
-        return _parse_batch_data(raw, batch)
+        parsed = _parse_batch_data(raw, batch)
+        return _retry_missing_symbols(parsed, batch, start=start_date, end=end_date)
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
@@ -203,6 +221,7 @@ def fetch_index_data(start_date: str | None = None, end_date: str | None = None)
     logger.info("市場指数データをダウンロード中...")
     raw = _download_batch(symbols, start=start_date, end=end_date)
     parsed = _parse_batch_data(raw, symbols)
+    parsed = _retry_missing_symbols(parsed, symbols, start=start_date, end=end_date)
 
     if parsed.empty:
         if cache_path.exists():

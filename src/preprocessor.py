@@ -1,6 +1,7 @@
 """PCA市場ファクター抽出・個別銘柄特徴量・データセット構築"""
 import logging
 import pickle
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -199,16 +200,36 @@ def compute_pca_factors(
     return factor_df, pca
 
 
+def _label_encoder_path() -> Path:
+    return config.DATA_PROCESSED_DIR / "label_encoder.pkl"
+
+
+def _load_label_encoder() -> LabelEncoder | None:
+    path = _label_encoder_path()
+    if not path.exists():
+        return None
+    with open(path, "rb") as f:
+        return pickle.load(f)
+
+
+def _save_label_encoder(le: LabelEncoder) -> None:
+    config.DATA_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    with open(_label_encoder_path(), "wb") as f:
+        pickle.dump(le, f)
+
+
 def build_dataset(
     prices: pd.DataFrame,
     stock_list: pd.DataFrame,
     index_data: pd.DataFrame,
     pca_fit: bool = True,
+    fit_encoders: bool | None = None,
 ) -> pd.DataFrame:
     """全特徴量を結合してデータセットを構築する。"""
     # ルックバック期間で絞り込み（メモリ削減）
-    if config.TRAIN_LOOKBACK_YEARS is not None:
-        cutoff = pd.Timestamp.now() - pd.DateOffset(years=config.TRAIN_LOOKBACK_YEARS)
+    if config.TRAIN_LOOKBACK_YEARS is not None and not prices.empty:
+        max_date = pd.to_datetime(prices["date"]).max()
+        cutoff = max_date - pd.DateOffset(years=config.TRAIN_LOOKBACK_YEARS)
         prices = prices[pd.to_datetime(prices["date"]) >= cutoff]
         logger.info(f"学習データを直近{config.TRAIN_LOOKBACK_YEARS}年に絞り込み: {len(prices)}行")
 
@@ -242,12 +263,16 @@ def build_dataset(
         sector_map = stock_list.set_index("symbol")[["sector_code", "sector_name"]].to_dict("index")
         sector_code_map = {s: v.get("sector_code", "0") for s, v in sector_map.items()}
         df["sector_code"] = df["symbol"].map(sector_code_map).fillna("0")
-        le = LabelEncoder()
-        df["sector_encoded"] = le.fit_transform(df["sector_code"].astype(str))
-        # LabelEncoderを保存
-        config.DATA_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-        with open(config.DATA_PROCESSED_DIR / "label_encoder.pkl", "wb") as f:
-            pickle.dump(le, f)
+        fit_encoders = pca_fit if fit_encoders is None else fit_encoders
+        le = None
+        if not fit_encoders:
+            le = _load_label_encoder()
+        if le is None:
+            le = LabelEncoder()
+            df["sector_encoded"] = le.fit_transform(df["sector_code"].astype(str))
+            _save_label_encoder(le)
+        else:
+            df["sector_encoded"] = le.transform(df["sector_code"].astype(str))
 
     # セクター相対強度 (shift(1)済みdaily_returnベース)
     if "sector_code" in df.columns and "daily_return" in df.columns:
