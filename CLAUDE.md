@@ -54,12 +54,29 @@
 - TOP3: `65.8%`
 - TOP5: `62.2%`
 
+## ルックバック比較（TOP1）
+
+`eval_lookback_top1.py` を追加し、`lookback=1..N (N=1..10)` をTOP1のみで比較した。
+
+結果:
+
+- `BEST_HIGH`: `lookback=1..9`, TOP1 `59.8%`
+- `BEST_LOW`: `lookback=1..9`, TOP1 `71.9%`
+- `BEST_AVG`: `lookback=1..9`, TOP1 `65.8%`
+
+意思決定:
+
+- 比較上は `1..9` が最良だが、現行運用は `LOOKBACK_DAYS=1..6` を維持する。
+- 理由は運用安定性と既存運用との連続性を優先するため。
+
 ## 運用メモ
 
 - 通常運用:
 - `python main.py run -o ranking.csv`
 - 新戦略初回または旧モデル混在時:
 - `python main.py train --full`
+- ルックバック比較:
+- `python eval_lookback_top1.py`
 
 ## 既知の制約
 

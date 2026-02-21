@@ -63,6 +63,16 @@ python main.py run -o ranking.csv
 - TOP3: `65.8%`
 - TOP5: `62.2%`
 
+### ルックバック比較（TOP1専用）
+
+`eval_lookback_top1.py` で `lookback=1..N (N=1..10)` を比較した結果:
+
+- `BEST_HIGH`: `lookback=1..9`, TOP1 `59.8%`
+- `BEST_LOW`: `lookback=1..9`, TOP1 `71.9%`
+- `BEST_AVG`: `lookback=1..9`, TOP1 `65.8%`
+
+ただし運用判断としては、過去設定との整合と安定運用を優先し、現時点では `LOOKBACK_DAYS=1..6` を維持する。
+
 ## 重要な注意点
 
 - モデル保存形式は新戦略向けに変更済みです。旧モデルがある場合は最初に `python main.py train --full` を実行してください。
@@ -73,6 +83,7 @@ python main.py run -o ranking.csv
 
 ```bash
 python eval_walkforward.py
+python eval_lookback_top1.py
 ```
 
 ## 主な実装ファイル
