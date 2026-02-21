@@ -1,113 +1,75 @@
-# CLAUDE.md — プロジェクト開発メモ
+# CLAUDE.md - プロジェクト開発メモ（現行）
 
-## プロジェクト概要
-日本株（東証全銘柄）の翌日値動きを予測するLightGBMベースのランキングシステム。
-JPX銘柄リスト取得 → yfinanceで価格取得 → 特徴量生成(PCA市場ファクター含む) → LightGBM学習 → 翌日上昇/値下がり確率ランキング出力。
+## 概要
 
-## ディレクトリ構成
-```
-kabu/
-├── config.py            # 全設定値（パス、パラメータ、ENHANCED_MODE切替）
-├── main.py              # CLI（fetch / train / predict / run）
-├── eval_walkforward.py  # ウォークフォワード検証スクリプト
-├── eval_compare.py      # Baseline vs Enhanced 比較検証スクリプト
-├── eval_lookback.py     # ルックバック期間の評価スクリプト
-├── requirements.txt
-├── src/
-│   ├── fetcher.py       # JPX銘柄リスト・yfinance価格取得（英数字コード対応）
-│   ├── preprocessor.py  # 特徴量生成（個別銘柄・PCA・市場指数・テクニカル指標）
-│   ├── model.py         # LightGBM学習・保存・追加学習・アンサンブル・キャリブレーション
-│   └── predictor.py     # 全銘柄予測・ランキング表示（Baseline / Enhanced）
-├── data/
-│   ├── raw/             # prices.parquet, index_prices.parquet, stock_list.parquet
-│   └── processed/       # pca_model.pkl, label_encoder.pkl
-├── models/              # lgbm_model.pkl, train_meta.json
-└── ranking.csv          # 直近の予測結果出力
-```
+東証全銘柄を対象に、翌日の始値基準イベントを2本のLightGBMで予測する。
 
-## アーキテクチャ
-- **ターゲット**: 翌日 始値→終値 が上昇なら1（UP）、下落なら0（DOWN）
-- **特徴量**: 個別銘柄リターン系(MA, ボラティリティ, 乖離率) + テクニカル指標(RSI, MACD, BB) + 出来高系 + PCA市場ファクター(50成分) + 市場指数(日経225/TOPIX) + セクター + 曜日/月
-- **モデル**: LightGBM binary classification（GPU対応）
-- **追加学習**: 既存モデルをinit_modelとして、前回学習日以降のデータで継続学習
-- **予測**: 上昇確率と値下がり確率(=1-上昇確率)を比較し、確信度の高い方向の銘柄を推奨
+- `target_high_5pct`: 翌日高値が翌日始値より `+5%` 以上
+- `target_low_5pct`: 翌日安値が翌日始値より `-5%` 以上
 
-## 現在の精度（ウォークフォワード検証 2025-09-05 ~ 2026-02-20）
-- **統合戦略 TOP1**: 68.5%（111日中76日正解）
-- **値下がり予測 単独**: 68.5%（全日DOWN採用）
-- **上昇予測 単独**: 50.5%（ランダム同等。改善が今後の課題）
-- **UP/DOWN独立 TOP-N**:
-  - 上昇: TOP1=50.5%, TOP3=52.6%, TOP5=50.8%
-  - 値下がり: TOP1=68.5%, TOP3=69.4%, TOP5=68.3%
-- **注**: TRAIN_LOOKBACK_YEARS=3 設定により学習データが直近3年に絞られ、テスト開始が2025-09以降となる
+予測時は上記2確率をそれぞれ全銘柄でランキング表示する。
 
-## Enhanced モード（実験的）
-`config.py` の `ENHANCED_MODE = True` で以下の拡張パイプラインが有効になる:
-1. **新テクニカル指標 (7列追加)**: RSI, MACD histogram/normalized, Bollinger position/width, volume_spike_ratio, sector_relative_strength
-2. **アンサンブル (3モデル)**: 標準/浅く速く/深く正則化 の3パラメータセットLightGBMの予測確率平均
-3. **確率キャリブレーション**: Isotonic regression でバリデーション確率を補正
-4. **非対称閾値**: `UP_THRESHOLD=0.52`, `DOWN_THRESHOLD=0.55` で方向別に確信度閾値を設定
-5. **サンプル重み付け**: `SAMPLE_WEIGHT_DECAY=0.998` の指数減衰で直近データを重視
+## 現在のディレクトリ責務
 
-### 比較検証結果 (eval_compare.py, 2025-03 ~ 2026-02, 224日)
-| 指標 | Baseline | Enhanced | 差分 |
-|------|----------|----------|------|
-| 統合TOP1 | 72.8% | 73.2% | +0.4pp |
-| 上昇のみ | 46.4% | 48.2% | +1.8pp |
-| 値下がりのみ | 72.8% | 75.0% | +2.2pp |
+- `main.py`
+- CLI (`fetch/train/predict/run`)
+- `src/fetcher.py`
+- JPX銘柄リスト取得、yfinance取得、キャッシュ
+- `src/preprocessor.py`
+- 特徴量生成、2ターゲット生成、PCA/市場特徴量統合
+- `src/model.py`
+- 2ターゲット用2モデル学習、保存/読込
+- `src/predictor.py`
+- `HIGH_5PCT` / `LOW_5PCT` ランキング生成
+- `eval_walkforward.py`
+- 新戦略用ウォークフォワード評価
 
-値下がり単独で +2.2pp 改善。全体は +0.4pp の微改善。一部月(6月, 1月)で悪化傾向あり。
+## 直近の仕様変更
 
-### Enhanced 関連の実装箇所
-- `config.py`: `ENHANCED_MODE`, テクニカル指標パラメータ, アンサンブルパラメータ, 閾値, 重み減衰率
-- `src/preprocessor.py`: `compute_individual_features()` に RSI/MACD/BB/volume_spike 追加, `build_dataset()` に sector_relative_strength 追加
-- `src/model.py`: `compute_sample_weights()`, `train_ensemble()`, `ensemble_predict_proba()`, `fit_calibrator()`, `save_model_enhanced()`, `load_model_enhanced()`
-- `src/predictor.py`: `predict_all_enhanced()`
-- `main.py`: `_train_enhanced()`, cmd_train/cmd_predict/cmd_run で ENHANCED_MODE 分岐
+1. 旧戦略（翌日始値->終値のUP/DOWN分類）を廃止
+2. 2ターゲットの独立分類へ移行
+3. モデル保存形式を変更
+- `models/lgbm_model.pkl` は `{"models": {"target_high_5pct": ..., "target_low_5pct": ...}, "feature_cols": ...}`
+4. 旧形式モデル検出時は `train --full` を要求
+5. `predict` / `run` 出力を新ランキング仕様へ変更
 
-## 既知の課題・今後の改善候補
-1. **上昇予測の精度が低い**: ターゲット不均衡(DOWN 56.77% vs UP 43.23%)が根本原因。`is_unbalance: True`を追加済みだが効果限定的。確信度比較で依然としてDOWN側が支配的
-2. **改善アプローチ候補**:
-   - UP/DOWN別に独立したモデルを学習する
-   - ターゲット定義の変更（始値→終値ではなく、前日終値→当日終値など）
-   - UP予測専用の特徴量エンジニアリング
-   - Enhanced モードの閾値チューニング（現状 UP=0.52, DOWN=0.55）
-3. **GPU依存**: config.pyの`device_type: "gpu"`が前提。CPU環境では変更が必要
+## 評価結果（現行設定）
 
-## 技術的な注意点
-- 銘柄コードは英数字混合に対応（285A, 130A等。2024年以降の東証新コード体系）
-- yfinanceのバッチ取得はスリープ付きリトライ（レート制限対策）
-- yfinance 1.1.0では`threads=True`で`dictionary changed size during iteration`エラーが多発するため`threads=False`を設定。`threads=False`化により各`yf.download()`は独立した同期処理になるため、外部からの並列呼び出し（`max_workers=3`）は安全。バッチサイズも100→300に拡大（45バッチ→5並列ラウンド≈9x高速化）
-- PCAモデルは学習時にfit、予測時はtransformのみ（列数不一致時はパディング）
-- 追加学習は`lgb.LGBMClassifier.fit(init_model=既存モデル)`で実現
-- eval_walkforward.pyは独自のFAST_PARAMSを持つ（検証高速化のため）
-- 出来高フィルタ（デフォルト10,000）で低流動性銘柄を除外
-- 6576.T（揚工舎、PRO Market・サービス業）のみ yfinance に `Quote not found` でデータなし。他の162銘柄を含む全市場で唯一の未取得。Yahoo Finance 側の未登録のため対処不可（予測精度への影響は無視できるレベル）
- - LabelEncoderは学習時に保存し、予測時は再利用（エンコードずれ防止）
- - 追加学習時は既存モデルの特徴量に合わせて列を整形（欠損は0埋め）
- - 予測時のNaNは0埋め
- - yfinance取得で欠損銘柄が出た場合はバッチ単位で再取得
+`eval_walkforward.py` 実行条件:
 
-## 実施済みパフォーマンス最適化
+- GPU
+- `TRAIN_LOOKBACK_YEARS=3`
+- テスト期間: 後ろ10%（`2025-10-31`〜`2026-02-20`, 74営業日）
+- リトレイン間隔: 10営業日
 
-### 第1弾
-- build_dataset二重呼び出し排除（cmd_run内でdataset変数を再利用）
-- compute_individual_features内のgroupbyオブジェクト事前作成・使い回し
-- PCA pivotテーブルのparquetキャッシュ（fit時に保存、predict時は差分追記のみ）
+結果:
 
-### 第2弾
-- **cmd_run()のparquet再読込排除**: fetch_index_data()/fetch_price_data()の戻り値をそのまま使い、_load_prices()による数百MBの再読込を削除
-- **pd.to_datetime()統合**: 同一カラムへの重複呼び出しを1回に（preprocessor.py, eval_lookback.py）
-- **セクターマッピング最適化**: ネストされた辞書lambdaを事前展開した平坦辞書の.map()に置き換え（preprocessor.py, eval_lookback.py）
-- **eval_walkforward.py日次ループ高速化**: 日次フィルタをgroupby事前辞書化でO(1)参照に、sort_values().head()をnlargest()/nsmallest()に置き換え
-- **eval_lookback.py groupby最適化**: add_lookback_features()のgroupbyオブジェクトを外部から渡して10回のループで使い回し、evaluate_model()の日次ループも事前groupby辞書+nlargest()に置き換え
+- `HIGH_5PCT`
+- TOP1: `40/74 = 54.1%`
+- TOP3: `57.7%`
+- TOP5: `57.8%`
 
-### 第3弾: メモリ使用量削減
-- **TRAIN_LOOKBACK_YEARS = 3**: build_dataset()の冒頭で直近3年に絞り込み（全期間5.8M行 → 約3.1M行、46%削減）。Noneで全期間使用
-- **float32変換**: build_dataset()完了後に全float64をfloat32に変換（値あたりのメモリ50%削減）
-- **効果**: データセット ~3.5GB → 1.19GB（66%削減）。16GB RAM環境でのOOMフリーズを解消
+- `LOW_5PCT`
+- TOP1: `52/74 = 70.3%`
+- TOP3: `65.8%`
+- TOP5: `62.2%`
 
-### 第4弾: ダウンロード高速化
-- **YFINANCE_BATCH_SIZE = 300**: threads=False化でスレッド競合解消済みのためバッチ100→300に拡大（45バッチ→15バッチ）
-- **max_workers = 3**: 各yf.download(threads=False)は独立したセッションで並列安全。外部3並列呼び出しを有効化
-- **効果**: 39分 → 6分（実測6.7倍速）。45バッチ×逐次 → 15バッチ×3並列=5ラウンド
+## 運用メモ
+
+- 通常運用:
+- `python main.py run -o ranking.csv`
+- 新戦略初回または旧モデル混在時:
+- `python main.py train --full`
+
+## 既知の制約
+
+1. `ENHANCED_MODE` は新戦略に未対応（`NotImplementedError`）
+2. `eval_compare.py`, `eval_lookback.py` は旧ターゲット前提のため未更新
+3. yfinanceの欠損銘柄は再取得ロジックを入れているが、ソース側未提供銘柄は取得不可
+
+## 技術的補足
+
+- `LabelEncoder` は保存・再利用（推論時ずれ防止）
+- 特徴量不足列は学習/推論時に0埋め
+- 推論入力のNaNは0埋め
+- 価格取得は `threads=False` + 外側並列（`max_workers=3`）

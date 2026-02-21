@@ -13,7 +13,7 @@ import config
 from src.fetcher import fetch_stock_list, fetch_price_data, fetch_index_data
 from src.preprocessor import build_dataset
 from src.model import train_model, load_meta
-from src.predictor import predict_all, predict_all_enhanced, display_ranking
+from src.predictor import predict_all, display_ranking
 
 logger = logging.getLogger(__name__)
 
@@ -128,30 +128,27 @@ def cmd_train(args: argparse.Namespace) -> None:
     dataset = build_dataset(prices, stock_list, index_data, pca_fit=True)
 
     if config.ENHANCED_MODE:
-        logger.info("Enhanced モードで学習...")
-        _train_enhanced(dataset)
-    else:
-        logger.info("モデル学習中...")
-        train_model(dataset, incremental=incremental)
+        raise NotImplementedError("ENHANCED_MODE は新戦略に未対応です。`ENHANCED_MODE = False` を使用してください。")
+    logger.info("モデル学習中...")
+    train_model(dataset, incremental=incremental)
 
     logger.info(f"=== モデル{mode}完了 ===")
 
 
 def cmd_predict(args: argparse.Namespace) -> None:
-    """全銘柄の翌日上昇確率を予測する。"""
+    """全銘柄の翌日 高値+5%% / 安値-5%% 確率を予測する。"""
     logger.info("=== 予測開始 ===")
 
     stock_list = fetch_stock_list()
     prices, index_data = _load_prices()
 
     if config.ENHANCED_MODE:
-        result = predict_all_enhanced(prices, stock_list, index_data)
-    else:
-        result = predict_all(prices, stock_list, index_data)
+        raise NotImplementedError("ENHANCED_MODE は新戦略に未対応です。`ENHANCED_MODE = False` を使用してください。")
+    result = predict_all(prices, stock_list, index_data)
     display_ranking(result, top_n=args.top)
 
     if args.output:
-        result["down"].to_csv(args.output, encoding="utf-8-sig")
+        result["low"].to_csv(args.output, encoding="utf-8-sig")
         print(f"ランキングをCSV出力: {args.output}")
 
     logger.info("=== 予測完了 ===")
@@ -181,27 +178,23 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     dataset = build_dataset(prices, stock_list, index_data, pca_fit=True)
     if config.ENHANCED_MODE:
-        _train_enhanced(dataset)
-    else:
-        train_model(dataset, incremental=incremental)
+        raise NotImplementedError("ENHANCED_MODE は新戦略に未対応です。`ENHANCED_MODE = False` を使用してください。")
+    train_model(dataset, incremental=incremental)
 
     # 3. 予測（学習時のdatasetを再利用してbuild_datasetの二重呼び出しを回避）
     logger.info("--- [3/3] 予測・ランキング ---")
-    if config.ENHANCED_MODE:
-        result = predict_all_enhanced(prices, stock_list, index_data, dataset=dataset)
-    else:
-        result = predict_all(prices, stock_list, index_data, dataset=dataset)
+    result = predict_all(prices, stock_list, index_data, dataset=dataset)
     display_ranking(result, top_n=args.top)
 
     if args.output:
-        result["down"].to_csv(args.output, encoding="utf-8-sig")
+        result["low"].to_csv(args.output, encoding="utf-8-sig")
         print(f"ランキングをCSV出力: {args.output}")
 
     logger.info("=== 全工程完了 ===")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="日本株 翌日上昇確率ランキングシステム")
+    parser = argparse.ArgumentParser(description="日本株 翌日高値/安値5%到達確率ランキングシステム")
     parser.add_argument("--debug", action="store_true", help="デバッグモード（外部ライブラリの詳細ログを表示）")
     subparsers = parser.add_subparsers(dest="command", help="サブコマンド")
 
@@ -216,7 +209,7 @@ def main() -> None:
     p_train.set_defaults(func=cmd_train)
 
     # predict
-    p_predict = subparsers.add_parser("predict", help="翌日上昇確率を予測")
+    p_predict = subparsers.add_parser("predict", help="翌日 高値+5%% / 安値-5%% 確率を予測")
     p_predict.add_argument("--top", type=int, default=config.RANKING_TOP_N, help="表示する上位銘柄数")
     p_predict.add_argument("--output", "-o", type=str, default=None, help="CSV出力ファイルパス")
     p_predict.set_defaults(func=cmd_predict)

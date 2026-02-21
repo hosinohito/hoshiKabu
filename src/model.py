@@ -72,46 +72,24 @@ def _align_feature_columns(df: pd.DataFrame, feature_cols: list[str]) -> pd.Data
     return df[feature_cols]
 
 
-def train_model(df: pd.DataFrame, incremental: bool = False) -> lgb.LGBMClassifier:
-    """LightGBMモデルを学習する。
+def _train_single_target(
+    df: pd.DataFrame,
+    feature_cols: list[str],
+    target_col: str,
+    cat_features: list[str],
+    incremental: bool,
+    existing_model: lgb.LGBMClassifier | None,
+    last_date: str | None,
+) -> lgb.LGBMClassifier:
+    local_df = df.dropna(subset=[target_col]).copy()
+    local_df[target_col] = local_df[target_col].astype(int)
 
-    Args:
-        df: 特徴量付きデータセット
-        incremental: Trueなら既存モデルをベースに追加学習
-    """
-    feature_cols = get_feature_columns(df)
-    logger.info(f"特徴量数: {len(feature_cols)}")
+    if incremental and existing_model is not None:
+        new_data = local_df[local_df["date"] > last_date] if last_date else local_df
+        if new_data.empty:
+            logger.info(f"{target_col}: 新規データなし。追加学習をスキップ")
+            return existing_model
 
-    # ターゲットが無い行を除外
-    df = df.dropna(subset=["target"]).copy()
-    df["target"] = df["target"].astype(int)
-
-    cat_features = [c for c in feature_cols if c in ("sector_encoded", "dayofweek", "month")]
-
-    # --- 追加学習モード ---
-    if incremental:
-        existing_model, existing_cols = load_model()
-        if set(existing_cols) != set(feature_cols):
-            logger.warning(
-                "既存モデルと特徴量が不一致のため、既存モデルの特徴量に合わせます。"
-            )
-        feature_cols = existing_cols
-        meta = load_meta()
-        last_date = meta["last_train_date"] if meta else None
-
-        if last_date:
-            # 前回学習日以降のデータで追加学習
-            new_data = df[df["date"] > last_date]
-            if new_data.empty:
-                logger.info("新規データなし。追加学習をスキップ")
-                print("新規データなし。追加学習をスキップ")
-                return existing_model
-            logger.info(f"追加学習: {last_date} 以降の {len(new_data)} サンプルで継続学習")
-            print(f"追加学習: {last_date} 以降の {len(new_data)} サンプル")
-        else:
-            new_data = df
-
-        # 新データの80%を学習、20%を検証に使う
         new_dates = np.sort(new_data["date"].unique())
         split_idx = int(len(new_dates) * 0.8)
         if split_idx == 0:
@@ -123,16 +101,11 @@ def train_model(df: pd.DataFrame, incremental: bool = False) -> lgb.LGBMClassifi
         if valid_part.empty:
             valid_part = train_part.tail(max(1, len(train_part) // 5))
 
-        X_train = _align_feature_columns(train_part.copy(), feature_cols)
-        y_train = train_part["target"]
-        X_valid = _align_feature_columns(valid_part.copy(), feature_cols)
-        y_valid = valid_part["target"]
+        X_train = _align_feature_columns(train_part.copy(), feature_cols).fillna(0)
+        y_train = train_part[target_col]
+        X_valid = _align_feature_columns(valid_part.copy(), feature_cols).fillna(0)
+        y_valid = valid_part[target_col]
 
-        # 欠損や新旧特徴量の差分を吸収
-        X_train = X_train.fillna(0)
-        X_valid = X_valid.fillna(0)
-
-        # 既存モデルのBoosterをinit_modelとして渡して継続学習
         inc_params = {
             **config.LIGHTGBM_PARAMS,
             "learning_rate": config.INCREMENTAL_LEARNING_RATE,
@@ -140,43 +113,27 @@ def train_model(df: pd.DataFrame, incremental: bool = False) -> lgb.LGBMClassifi
         }
         inc_params.pop("early_stopping_rounds", None)
         model = lgb.LGBMClassifier(**inc_params)
-
         model.fit(
             X_train,
             y_train,
             eval_set=[(X_valid, y_valid)],
             eval_metric="binary_logloss",
             init_model=existing_model,
-            callbacks=[
-                lgb.log_evaluation(period=20),
-                lgb.early_stopping(stopping_rounds=15),
-            ],
+            callbacks=[lgb.log_evaluation(period=20), lgb.early_stopping(stopping_rounds=15)],
             categorical_feature=cat_features if cat_features else "auto",
         )
-
-        _evaluate(model, X_valid, y_valid, "incremental-valid")
-
-        max_date = str(pd.Timestamp(df["date"].max()).date())
-        save_model(model, feature_cols)
-        _save_meta(max_date)
+        _evaluate(model, X_valid, y_valid, f"{target_col}-incremental-valid")
         return model
 
-    # --- フル学習モード ---
-    train, valid, test = time_series_split(df)
-
-    X_train = _align_feature_columns(train.copy(), feature_cols)
-    y_train = train["target"]
-    X_valid = _align_feature_columns(valid.copy(), feature_cols)
-    y_valid = valid["target"]
-    X_test = _align_feature_columns(test.copy(), feature_cols)
-    y_test = test["target"]
-
-    X_train = X_train.fillna(0)
-    X_valid = X_valid.fillna(0)
-    X_test = X_test.fillna(0)
+    train, valid, test = time_series_split(local_df)
+    X_train = _align_feature_columns(train.copy(), feature_cols).fillna(0)
+    y_train = train[target_col]
+    X_valid = _align_feature_columns(valid.copy(), feature_cols).fillna(0)
+    y_valid = valid[target_col]
+    X_test = _align_feature_columns(test.copy(), feature_cols).fillna(0)
+    y_test = test[target_col]
 
     model = lgb.LGBMClassifier(**config.LIGHTGBM_PARAMS)
-
     model.fit(
         X_train,
         y_train,
@@ -188,41 +145,68 @@ def train_model(df: pd.DataFrame, incremental: bool = False) -> lgb.LGBMClassifi
         ],
         categorical_feature=cat_features if cat_features else "auto",
     )
-
-    _evaluate(model, X_valid, y_valid, "valid")
-    _evaluate(model, X_test, y_test, "test")
-
-    # 特徴量重要度
-    importance = pd.DataFrame({
-        "feature": feature_cols,
-        "importance": model.feature_importances_,
-    }).sort_values("importance", ascending=False)
-    print("\n=== 特徴量重要度 TOP20 ===")
-    print(importance.head(20).to_string(index=False))
-
-    max_date = str(pd.Timestamp(df["date"].max()).date())
-    save_model(model, feature_cols)
-    _save_meta(max_date)
+    _evaluate(model, X_valid, y_valid, f"{target_col}-valid")
+    _evaluate(model, X_test, y_test, f"{target_col}-test")
     return model
 
 
-def save_model(model: lgb.LGBMClassifier, feature_cols: list[str]) -> None:
-    """モデルと特徴量リストを保存する。"""
+def train_model(df: pd.DataFrame, incremental: bool = False) -> dict[str, lgb.LGBMClassifier]:
+    """2ターゲット（高値+5% / 安値-5%）のモデルを学習する。"""
+    feature_cols = get_feature_columns(df)
+    logger.info(f"特徴量数: {len(feature_cols)}")
+    cat_features = [c for c in feature_cols if c in ("sector_encoded", "dayofweek", "month")]
+    targets = ["target_high_5pct", "target_low_5pct"]
+
+    existing_models: dict[str, lgb.LGBMClassifier] = {}
+    last_date = None
+    if incremental:
+        loaded_models, existing_cols = load_model()
+        if set(existing_cols) != set(feature_cols):
+            logger.warning("既存モデルと特徴量が不一致のため、既存モデル特徴量に合わせます。")
+        feature_cols = existing_cols
+        cat_features = [c for c in feature_cols if c in ("sector_encoded", "dayofweek", "month")]
+        existing_models = loaded_models
+        meta = load_meta()
+        last_date = meta["last_train_date"] if meta else None
+
+    trained_models: dict[str, lgb.LGBMClassifier] = {}
+    for target_col in targets:
+        logger.info(f"{target_col} の学習を開始")
+        trained_models[target_col] = _train_single_target(
+            df=df,
+            feature_cols=feature_cols,
+            target_col=target_col,
+            cat_features=cat_features,
+            incremental=incremental,
+            existing_model=existing_models.get(target_col),
+            last_date=last_date,
+        )
+
+    max_date = str(pd.Timestamp(df["date"].max()).date())
+    save_model(trained_models, feature_cols)
+    _save_meta(max_date)
+    return trained_models
+
+
+def save_model(models: dict[str, lgb.LGBMClassifier], feature_cols: list[str]) -> None:
+    """2モデルと特徴量リストを保存する。"""
     config.MODELS_DIR.mkdir(parents=True, exist_ok=True)
     model_path = config.MODELS_DIR / "lgbm_model.pkl"
     with open(model_path, "wb") as f:
-        pickle.dump({"model": model, "feature_cols": feature_cols}, f)
+        pickle.dump({"models": models, "feature_cols": feature_cols}, f)
     logger.info(f"モデル保存: {model_path}")
 
 
-def load_model() -> tuple[lgb.LGBMClassifier, list[str]]:
-    """保存済みモデルを読み込む。"""
+def load_model() -> tuple[dict[str, lgb.LGBMClassifier], list[str]]:
+    """保存済み2モデルを読み込む。"""
     model_path = config.MODELS_DIR / "lgbm_model.pkl"
     if not model_path.exists():
         raise FileNotFoundError("学習済みモデルが見つかりません。先にtrainを実行してください。")
     with open(model_path, "rb") as f:
         data = pickle.load(f)
-    return data["model"], data["feature_cols"]
+    if "models" not in data:
+        raise ValueError("旧形式モデルです。`python main.py train --full` を実行してください。")
+    return data["models"], data["feature_cols"]
 
 
 # === Enhanced (アンサンブル・キャリブレーション) ===

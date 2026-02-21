@@ -236,10 +236,14 @@ def build_dataset(
     logger.info("個別銘柄特徴量を生成中...")
     df = compute_individual_features(prices)
 
-    # ターゲット: 翌日の始値→終値が上昇なら1
+    # ターゲット:
+    # 1) 翌日の高値が始値より5%以上高い
+    # 2) 翌日の安値が始値より5%以上低い
     df["next_open"] = df.groupby("symbol")["open"].shift(-1)
-    df["next_close"] = df.groupby("symbol")["close"].shift(-1)
-    df["target"] = (df["next_close"] > df["next_open"]).astype(int)
+    df["next_high"] = df.groupby("symbol")["high"].shift(-1)
+    df["next_low"] = df.groupby("symbol")["low"].shift(-1)
+    df["target_high_5pct"] = (df["next_high"] >= df["next_open"] * 1.05).astype(int)
+    df["target_low_5pct"] = (df["next_low"] <= df["next_open"] * 0.95).astype(int)
 
     # 市場指数特徴量
     logger.info("市場指数特徴量を結合中...")
@@ -299,6 +303,7 @@ def get_feature_columns(df: pd.DataFrame) -> list[str]:
     exclude = {
         "date", "symbol", "code", "name", "sector_code", "sector_name",
         "market", "open", "high", "low", "close", "volume",
-        "next_open", "next_close", "target",
+        "next_open", "next_high", "next_low",
+        "target", "target_high_5pct", "target_low_5pct",
     }
     return [c for c in df.columns if c not in exclude]

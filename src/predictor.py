@@ -1,12 +1,11 @@
-"""全銘柄一括予測→ランキング出力（上昇・値下がり統合戦略）"""
+"""全銘柄一括予測→ランキング出力（高値+5% / 安値-5%戦略）"""
 import logging
 
-import numpy as np
 import pandas as pd
 
 import config
-from src.model import load_model, load_model_enhanced, ensemble_predict_proba
-from src.preprocessor import build_dataset, get_feature_columns
+from src.model import load_model
+from src.preprocessor import build_dataset
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +23,8 @@ def predict_all(
     index_data: pd.DataFrame,
     dataset: pd.DataFrame | None = None,
 ) -> dict:
-    """全銘柄の翌日予測を行い、上昇・値下がりランキングと推奨シグナルを返す。"""
-    model, feature_cols = load_model()
+    """全銘柄の翌日予測を行い、2種類のランキングを返す。"""
+    models, feature_cols = load_model()
 
     if dataset is not None:
         logger.info("学習済みデータセットを再利用")
@@ -40,16 +39,12 @@ def predict_all(
 
     if latest.empty:
         logger.warning("予測対象データがありません")
-        return {"up": pd.DataFrame(), "down": pd.DataFrame(), "signal": None}
+        return {"high": pd.DataFrame(), "low": pd.DataFrame(), "signals": []}
 
-    # 特徴量の整合性
     X = _align_features(latest.copy(), feature_cols)
+    latest["high_5pct_probability"] = models["target_high_5pct"].predict_proba(X)[:, 1]
+    latest["low_5pct_probability"] = models["target_low_5pct"].predict_proba(X)[:, 1]
 
-    proba = model.predict_proba(X)[:, 1]
-    latest["up_probability"] = proba
-    latest["down_probability"] = 1 - proba
-
-    # 出来高フィルタ
     vol_threshold = config.VOLUME_THRESHOLD
     if "volume" in latest.columns:
         filtered = latest[latest["volume"] >= vol_threshold].copy()
@@ -57,54 +52,38 @@ def predict_all(
     else:
         filtered = latest.copy()
 
-    # 銘柄情報を結合
     name_map = stock_list.set_index("symbol")["name"].to_dict()
     sector_map = stock_list.set_index("symbol")["sector_name"].to_dict()
-    for target_df in [filtered]:
-        target_df["name"] = target_df["symbol"].map(name_map)
-        target_df["sector"] = target_df["symbol"].map(sector_map)
+    filtered["name"] = filtered["symbol"].map(name_map)
+    filtered["sector"] = filtered["symbol"].map(sector_map)
 
-    keep_cols = ["symbol", "name", "sector", "up_probability", "down_probability", "volume"]
+    keep_cols = ["symbol", "name", "sector", "high_5pct_probability", "low_5pct_probability", "volume"]
     keep_cols = [c for c in keep_cols if c in filtered.columns]
 
-    # 上昇ランキング
-    up_ranking = (
-        filtered[keep_cols]
-        .sort_values("up_probability", ascending=False)
-        .reset_index(drop=True)
-    )
-    up_ranking.index = up_ranking.index + 1
-    up_ranking.index.name = "順位"
+    high_ranking = filtered[keep_cols].sort_values("high_5pct_probability", ascending=False).reset_index(drop=True)
+    high_ranking.index = high_ranking.index + 1
+    high_ranking.index.name = "順位"
 
-    # 値下がりランキング
-    down_ranking = (
-        filtered[keep_cols]
-        .sort_values("down_probability", ascending=False)
-        .reset_index(drop=True)
-    )
-    down_ranking.index = down_ranking.index + 1
-    down_ranking.index.name = "順位"
+    low_ranking = filtered[keep_cols].sort_values("low_5pct_probability", ascending=False).reset_index(drop=True)
+    low_ranking.index = low_ranking.index + 1
+    low_ranking.index.name = "順位"
 
-    # 統合シグナル: 上昇TOP1 vs 値下がりTOP1の確信度比較
-    up_top1_conf = filtered["up_probability"].max()
-    dn_top1_conf = filtered["down_probability"].max()
+    signals = [
+        {
+            "type": "HIGH_5PCT",
+            "confidence": float(high_ranking.iloc[0]["high_5pct_probability"]),
+            "symbol": high_ranking.iloc[0]["symbol"],
+            "name": high_ranking.iloc[0]["name"],
+        },
+        {
+            "type": "LOW_5PCT",
+            "confidence": float(low_ranking.iloc[0]["low_5pct_probability"]),
+            "symbol": low_ranking.iloc[0]["symbol"],
+            "name": low_ranking.iloc[0]["name"],
+        },
+    ]
 
-    if up_top1_conf >= dn_top1_conf:
-        signal = {
-            "direction": "UP",
-            "confidence": up_top1_conf,
-            "symbol": up_ranking.iloc[0]["symbol"],
-            "name": up_ranking.iloc[0]["name"],
-        }
-    else:
-        signal = {
-            "direction": "DOWN",
-            "confidence": dn_top1_conf,
-            "symbol": down_ranking.iloc[0]["symbol"],
-            "name": down_ranking.iloc[0]["name"],
-        }
-
-    return {"up": up_ranking, "down": down_ranking, "signal": signal}
+    return {"high": high_ranking, "low": low_ranking, "signals": signals}
 
 
 def predict_all_enhanced(
@@ -113,136 +92,50 @@ def predict_all_enhanced(
     index_data: pd.DataFrame,
     dataset: pd.DataFrame | None = None,
 ) -> dict:
-    """アンサンブル+キャリブレーション+非対称閾値による予測。"""
-    models, calibrator, feature_cols = load_model_enhanced()
-
-    if dataset is not None:
-        df = dataset
-    else:
-        df = build_dataset(prices, stock_list, index_data, pca_fit=False)
-
-    latest_date = df["date"].max()
-    latest = df[df["date"] == latest_date].copy()
-    logger.info(f"Enhanced予測対象日: {latest_date}, 銘柄数: {len(latest)}")
-
-    if latest.empty:
-        return {"up": pd.DataFrame(), "down": pd.DataFrame(), "signal": None}
-
-    X = _align_features(latest.copy(), feature_cols)
-
-    # アンサンブル平均 → キャリブレーション
-    raw_proba = ensemble_predict_proba(models, X)
-    calibrated = calibrator.predict(raw_proba)
-    latest["up_probability"] = calibrated
-    latest["down_probability"] = 1 - calibrated
-
-    # 出来高フィルタ
-    if "volume" in latest.columns:
-        filtered = latest[latest["volume"] >= config.VOLUME_THRESHOLD].copy()
-    else:
-        filtered = latest.copy()
-
-    # 銘柄情報
-    name_map = stock_list.set_index("symbol")["name"].to_dict()
-    sector_map = stock_list.set_index("symbol")["sector_name"].to_dict()
-    filtered["name"] = filtered["symbol"].map(name_map)
-    filtered["sector"] = filtered["symbol"].map(sector_map)
-
-    keep_cols = [c for c in ["symbol", "name", "sector", "up_probability", "down_probability", "volume"]
-                 if c in filtered.columns]
-
-    up_ranking = filtered[keep_cols].sort_values("up_probability", ascending=False).reset_index(drop=True)
-    up_ranking.index = up_ranking.index + 1
-    up_ranking.index.name = "順位"
-
-    down_ranking = filtered[keep_cols].sort_values("down_probability", ascending=False).reset_index(drop=True)
-    down_ranking.index = down_ranking.index + 1
-    down_ranking.index.name = "順位"
-
-    # 非対称閾値による統合シグナル
-    up_top1_conf = filtered["up_probability"].max()
-    dn_top1_conf = filtered["down_probability"].max()
-
-    up_passes = up_top1_conf >= config.UP_THRESHOLD
-    dn_passes = dn_top1_conf >= config.DOWN_THRESHOLD
-
-    if up_passes and dn_passes:
-        # 両方閾値超え → 確信度の高い方を採用
-        if up_top1_conf >= dn_top1_conf:
-            direction = "UP"
-        else:
-            direction = "DOWN"
-    elif up_passes:
-        direction = "UP"
-    elif dn_passes:
-        direction = "DOWN"
-    else:
-        # どちらも閾値未満 → 確信度の高い方
-        direction = "UP" if up_top1_conf >= dn_top1_conf else "DOWN"
-
-    if direction == "UP":
-        signal = {
-            "direction": "UP",
-            "confidence": up_top1_conf,
-            "symbol": up_ranking.iloc[0]["symbol"],
-            "name": up_ranking.iloc[0]["name"],
-        }
-    else:
-        signal = {
-            "direction": "DOWN",
-            "confidence": dn_top1_conf,
-            "symbol": down_ranking.iloc[0]["symbol"],
-            "name": down_ranking.iloc[0]["name"],
-        }
-
-    return {"up": up_ranking, "down": down_ranking, "signal": signal}
+    raise NotImplementedError("ENHANCED_MODE は新戦略に未対応です。`ENHANCED_MODE = False` を使用してください。")
 
 
 def display_ranking(result: dict, top_n: int | None = None) -> None:
-    """統合ランキングをコンソールに表示する。"""
+    """2種類のランキングをコンソールに表示する。"""
     top_n = top_n or config.RANKING_TOP_N
-    signal = result.get("signal")
-    up_ranking = result.get("up", pd.DataFrame())
-    down_ranking = result.get("down", pd.DataFrame())
+    signals = result.get("signals", [])
+    high_ranking = result.get("high", pd.DataFrame())
+    low_ranking = result.get("low", pd.DataFrame())
 
-    if up_ranking.empty and down_ranking.empty:
+    if high_ranking.empty and low_ranking.empty:
         print("ランキングデータがありません。")
         return
 
-    # 統合シグナル
-    if signal:
-        direction_jp = "上昇" if signal["direction"] == "UP" else "値下がり"
+    if signals:
         print(f"\n{'=' * 70}")
-        print(f"  本日の推奨シグナル: {direction_jp}")
-        print(f"  銘柄: {signal['symbol']}  {signal['name']}")
-        print(f"  確信度: {signal['confidence'] * 100:.1f}%")
+        print("  本日の注目シグナル")
+        print(f"  高値+5%候補: {signals[0]['symbol']}  {signals[0]['name']}  ({signals[0]['confidence'] * 100:.1f}%)")
+        print(f"  安値-5%候補: {signals[1]['symbol']}  {signals[1]['name']}  ({signals[1]['confidence'] * 100:.1f}%)")
         print(f"{'=' * 70}")
 
-    # 値下がりランキング
     print(f"\n{'=' * 70}")
-    print(f"  翌日値下がり確率ランキング (出来高>={config.VOLUME_THRESHOLD:,})")
+    print(f"  翌日 安値が始値より5%以上低い確率ランキング (出来高>={config.VOLUME_THRESHOLD:,})")
     print(f"{'=' * 70}")
-    print(f"{'順位':>4}  {'コード':<8} {'銘柄名':<20} {'業種':<14} {'値下がり確率':>8}")
+    print(f"{'順位':>4}  {'コード':<8} {'銘柄名':<20} {'業種':<14} {'-5%確率':>8}")
     print(f"{'-' * 70}")
-    for i, row in down_ranking.head(top_n).iterrows():
+    for i, row in low_ranking.head(top_n).iterrows():
         name = str(row.get("name", ""))[:18]
         sector = str(row.get("sector", ""))[:12]
-        prob = row["down_probability"] * 100
+        prob = row["low_5pct_probability"] * 100
         print(f"{i:>4}  {row['symbol']:<8} {name:<20} {sector:<14} {prob:>7.1f}%")
     print(f"{'-' * 70}")
-    print(f"  全 {len(down_ranking)} 銘柄中 上位 {min(top_n, len(down_ranking))} 銘柄を表示")
+    print(f"  全 {len(low_ranking)} 銘柄中 上位 {min(top_n, len(low_ranking))} 銘柄を表示")
 
-    # 上昇ランキング
     print(f"\n{'=' * 70}")
-    print(f"  翌日上昇確率ランキング (出来高>={config.VOLUME_THRESHOLD:,})")
+    print(f"  翌日 高値が始値より5%以上高い確率ランキング (出来高>={config.VOLUME_THRESHOLD:,})")
     print(f"{'=' * 70}")
-    print(f"{'順位':>4}  {'コード':<8} {'銘柄名':<20} {'業種':<14} {'上昇確率':>8}")
+    print(f"{'順位':>4}  {'コード':<8} {'銘柄名':<20} {'業種':<14} {'+5%確率':>8}")
     print(f"{'-' * 70}")
-    for i, row in up_ranking.head(top_n).iterrows():
+    for i, row in high_ranking.head(top_n).iterrows():
         name = str(row.get("name", ""))[:18]
         sector = str(row.get("sector", ""))[:12]
-        prob = row["up_probability"] * 100
+        prob = row["high_5pct_probability"] * 100
         print(f"{i:>4}  {row['symbol']:<8} {name:<20} {sector:<14} {prob:>7.1f}%")
     print(f"{'-' * 70}")
-    print(f"  全 {len(up_ranking)} 銘柄中 上位 {min(top_n, len(up_ranking))} 銘柄を表示")
+    print(f"  全 {len(high_ranking)} 銘柄中 上位 {min(top_n, len(high_ranking))} 銘柄を表示")
     print()
