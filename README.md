@@ -73,6 +73,33 @@ python main.py run -o ranking.csv
 
 ただし運用判断としては、過去設定との整合と安定運用を優先し、現時点では `LOOKBACK_DAYS=1..6` を維持する。
 
+### 本番取り込み後の学習設定
+
+実験で有効だった設定を本番学習コードに反映済み（`LOOKBACK_DAYS=1..6` は維持）。
+
+- `metric`: `average_precision`
+- `learning_rate`: `0.02`
+- `n_estimators`: `2000`
+- `num_leaves`: `15`
+- `min_child_samples`: `100`
+- `early_stopping_rounds`: `150`
+- `scale_pos_weight`: ターゲット別に `min(10, sqrt(neg/pos))` を自動計算
+- `is_unbalance`: `False`（`scale_pos_weight` と併用しない）
+
+### 本番取り込み後の再学習結果
+
+`python main.py train --full`（2026-02-21 実行）
+
+- `target_high_5pct`
+- valid: `AUC=0.8400`, `LogLoss=0.1759`
+- test: `AUC=0.8535`, `LogLoss=0.1536`
+
+- `target_low_5pct`
+- valid: `AUC=0.8668`, `LogLoss=0.1399`
+- test: `AUC=0.8813`, `LogLoss=0.1216`
+
+同条件で `python main.py predict -o ranking.csv` を実行し、ランキング更新済み。
+
 ## 重要な注意点
 
 - モデル保存形式は新戦略向けに変更済みです。旧モデルがある場合は最初に `python main.py train --full` を実行してください。

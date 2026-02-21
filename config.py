@@ -54,17 +54,18 @@ CALIBRATION_METHOD = "isotonic"
 # モデルパラメータ
 LIGHTGBM_PARAMS = {
     "objective": "binary",
-    "metric": "binary_logloss",
+    "metric": "average_precision",
     "boosting_type": "gbdt",
-    "num_leaves": 63,
-    "learning_rate": 0.05,
-    "feature_fraction": 0.8,
-    "bagging_fraction": 0.8,
+    "num_leaves": 15,
+    "learning_rate": 0.02,
+    "feature_fraction": 0.9,
+    "bagging_fraction": 0.9,
     "bagging_freq": 5,
     "verbose": -1,
-    "is_unbalance": True,
-    "n_estimators": 500,
-    "early_stopping_rounds": 30,
+    "min_child_samples": 100,
+    "is_unbalance": False,
+    "n_estimators": 2000,
+    "early_stopping_rounds": 150,
     "device_type": "gpu",
     "gpu_platform_id": 0,
     "gpu_device_id": 0,
@@ -81,7 +82,11 @@ VOLUME_THRESHOLD = 10000  # 出来高フィルタ閾値
 
 # 追加学習
 INCREMENTAL_N_ESTIMATORS = 100  # 追加学習時のブースティング回数
-INCREMENTAL_LEARNING_RATE = 0.02  # 追加学習時は小さめの学習率
+INCREMENTAL_LEARNING_RATE = 0.01  # 追加学習時は小さめの学習率
+
+# クラス不均衡補正（target別に train 時点で計算）
+SCALE_POS_WEIGHT_MODE = "sqrt_cap"  # "raw", "sqrt_cap"
+SCALE_POS_WEIGHT_CAP = 10.0
 
 # アンサンブル共通パラメータ
 ENSEMBLE_COMMON_PARAMS = {

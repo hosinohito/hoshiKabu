@@ -72,6 +72,16 @@ def _align_feature_columns(df: pd.DataFrame, feature_cols: list[str]) -> pd.Data
     return df[feature_cols]
 
 
+def _compute_scale_pos_weight(y: pd.Series) -> float:
+    pos = float(y.sum())
+    neg = float(len(y) - pos)
+    raw = neg / max(pos, 1.0)
+    if config.SCALE_POS_WEIGHT_MODE == "raw":
+        return raw
+    # sqrt_cap: 過補正で1イテレーション停止しやすいので緩和
+    return min(float(config.SCALE_POS_WEIGHT_CAP), float(np.sqrt(raw)))
+
+
 def _train_single_target(
     df: pd.DataFrame,
     feature_cols: list[str],
@@ -106,18 +116,22 @@ def _train_single_target(
         X_valid = _align_feature_columns(valid_part.copy(), feature_cols).fillna(0)
         y_valid = valid_part[target_col]
 
+        scale_pos_weight = _compute_scale_pos_weight(y_train)
         inc_params = {
             **config.LIGHTGBM_PARAMS,
             "learning_rate": config.INCREMENTAL_LEARNING_RATE,
             "n_estimators": config.INCREMENTAL_N_ESTIMATORS,
+            "scale_pos_weight": scale_pos_weight,
+            "is_unbalance": False,
         }
         inc_params.pop("early_stopping_rounds", None)
         model = lgb.LGBMClassifier(**inc_params)
+        eval_metric = inc_params.get("metric", "average_precision")
         model.fit(
             X_train,
             y_train,
             eval_set=[(X_valid, y_valid)],
-            eval_metric="binary_logloss",
+            eval_metric=eval_metric,
             init_model=existing_model,
             callbacks=[lgb.log_evaluation(period=20), lgb.early_stopping(stopping_rounds=15)],
             categorical_feature=cat_features if cat_features else "auto",
@@ -133,12 +147,19 @@ def _train_single_target(
     X_test = _align_feature_columns(test.copy(), feature_cols).fillna(0)
     y_test = test[target_col]
 
-    model = lgb.LGBMClassifier(**config.LIGHTGBM_PARAMS)
+    scale_pos_weight = _compute_scale_pos_weight(y_train)
+    base_params = {
+        **config.LIGHTGBM_PARAMS,
+        "scale_pos_weight": scale_pos_weight,
+        "is_unbalance": False,
+    }
+    model = lgb.LGBMClassifier(**base_params)
+    eval_metric = base_params.get("metric", "average_precision")
     model.fit(
         X_train,
         y_train,
         eval_set=[(X_valid, y_valid)],
-        eval_metric="binary_logloss",
+        eval_metric=eval_metric,
         callbacks=[
             lgb.log_evaluation(period=50),
             lgb.early_stopping(stopping_rounds=config.LIGHTGBM_PARAMS.get("early_stopping_rounds", 30)),

@@ -90,3 +90,28 @@
 - 特徴量不足列は学習/推論時に0埋め
 - 推論入力のNaNは0埋め
 - 価格取得は `threads=False` + 外側並列（`max_workers=3`）
+
+## 本番取り込み済み設定（2026-02-21）
+
+`config.py` と `src/model.py` に以下を反映済み。
+
+- `LOOKBACK_DAYS` は `1..6` を維持
+- 学習指標を `average_precision` へ変更
+- モデル設定を実験値へ変更
+- `learning_rate=0.02`
+- `n_estimators=2000`
+- `num_leaves=15`
+- `min_child_samples=100`
+- `early_stopping_rounds=150`
+- ターゲット別 `scale_pos_weight` を自動計算
+- `min(10, sqrt(neg/pos))`
+- `is_unbalance=False` 固定
+
+再学習結果（`python main.py train --full`）:
+
+- `target_high_5pct`:
+- valid `AUC=0.8400`, test `AUC=0.8535`
+- `target_low_5pct`:
+- valid `AUC=0.8668`, test `AUC=0.8813`
+
+予測実行（`python main.py predict -o ranking.csv`）も完了し、`ranking.csv` 更新済み。
