@@ -1,125 +1,101 @@
-# kabu - 日本株 翌日5%到達確率ランキングシステム
+# hoshiKabu
 
-東証全銘柄を対象に、翌日の始値を基準として次の2確率をLightGBMで予測しランキング出力します。
+日本株の翌営業日における以下2イベントを、LightGBMで銘柄ごとに予測してランキング化するプロジェクトです。
 
-- `HIGH_5PCT`: 翌日高値が始値より `+5%` 以上高い確率
-- `LOW_5PCT`: 翌日安値が始値より `-5%` 以上低い確率
+- `HIGH_5PCT`: 翌営業日の高値が始値比 `+5%` 以上に到達
+- `LOW_5PCT`: 翌営業日の安値が始値比 `-5%` 以下に到達
 
-## 必要環境
+## 環境要件
 
+- Windows 10/11 + PowerShell
 - Python 3.10+
-- CUDA対応GPU（LightGBM GPU利用）
-- Windows 10/11（開発・検証環境）
+- GPU (LightGBM GPU を使う設定。CPUで動かしたい場合は `config.py` の `device_type` 変更が必要)
 
-## セットアップ
+## セットアップ (PowerShell)
 
-```bash
-git clone <repository-url>
-cd kabu
+このリポジトリ直下 (`hoshiKabu`) で実行してください。
+
+```powershell
 python -m venv .venv
-.venv\Scripts\activate
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
+`requirements.txt` には `.xls` 読み込み用の `xlrd` を含んでいます。
+
 ## 使い方
 
-### 初回
+### 一括実行
 
-```bash
+```powershell
+python main.py run -o ranking.csv
+```
+
+`run` は `fetch -> train -> predict` を順番に実行します。
+
+### 個別実行
+
+```powershell
 python main.py fetch
 python main.py train --full
 python main.py predict -o ranking.csv
 ```
 
-### 日次運用
-
-```bash
-python main.py run -o ranking.csv
-```
-
-`run` は `fetch -> train -> predict` を一括実行します。
-
 ## 出力
 
-コンソールには次を表示します。
+- コンソールに `LOW_5PCT` / `HIGH_5PCT` のランキングを表示
+- `-o ranking.csv` 指定時は `LOW_5PCT` ランキングをCSV保存
 
-- 注目シグナル（`HIGH_5PCT` 上位1銘柄、`LOW_5PCT` 上位1銘柄）
-- `LOW_5PCT` ランキング
-- `HIGH_5PCT` ランキング
+## 主な構成
 
-`-o ranking.csv` 指定時は `LOW_5PCT` ランキングをCSV保存します。
+- `main.py`: CLIエントリ (`fetch/train/predict/run`)
+- `src/fetcher.py`: JPX銘柄リスト・価格データ取得
+- `src/preprocessor.py`: 特徴量生成、ターゲット生成
+- `src/model.py`: 2ターゲット学習、保存、読み込み
+- `src/predictor.py`: 全銘柄推論、ランキング作成
+- `config.py`: 学習・推論・データ取得設定
 
-## 現在の評価結果
+## 評価スクリプト
 
-`eval_walkforward.py`（GPU, `TRAIN_LOOKBACK_YEARS=3`, テスト後ろ10%, 2025-10-31〜2026-02-20, 74営業日）
-
-- `HIGH_5PCT`
-- TOP1: `40/74 = 54.1%`
-- TOP3: `57.7%`
-- TOP5: `57.8%`
-
-- `LOW_5PCT`
-- TOP1: `52/74 = 70.3%`
-- TOP3: `65.8%`
-- TOP5: `62.2%`
-
-### ルックバック比較（TOP1専用）
-
-`eval_lookback_top1.py` で `lookback=1..N (N=1..10)` を比較した結果:
-
-- `BEST_HIGH`: `lookback=1..9`, TOP1 `59.8%`
-- `BEST_LOW`: `lookback=1..9`, TOP1 `71.9%`
-- `BEST_AVG`: `lookback=1..9`, TOP1 `65.8%`
-
-ただし運用判断としては、過去設定との整合と安定運用を優先し、現時点では `LOOKBACK_DAYS=1..6` を維持する。
-
-### 本番取り込み後の学習設定
-
-実験で有効だった設定を本番学習コードに反映済み（`LOOKBACK_DAYS=1..6` は維持）。
-
-- `metric`: `average_precision`
-- `learning_rate`: `0.02`
-- `n_estimators`: `2000`
-- `num_leaves`: `15`
-- `min_child_samples`: `100`
-- `early_stopping_rounds`: `150`
-- `scale_pos_weight`: ターゲット別に `min(10, sqrt(neg/pos))` を自動計算
-- `is_unbalance`: `False`（`scale_pos_weight` と併用しない）
-
-### 本番取り込み後の再学習結果
-
-`python main.py train --full`（2026-02-21 実行）
-
-- `target_high_5pct`
-- valid: `AUC=0.8400`, `LogLoss=0.1759`
-- test: `AUC=0.8535`, `LogLoss=0.1536`
-
-- `target_low_5pct`
-- valid: `AUC=0.8668`, `LogLoss=0.1399`
-- test: `AUC=0.8813`, `LogLoss=0.1216`
-
-同条件で `python main.py predict -o ranking.csv` を実行し、ランキング更新済み。
-
-## 重要な注意点
-
-- モデル保存形式は新戦略向けに変更済みです。旧モデルがある場合は最初に `python main.py train --full` を実行してください。
-- `ENHANCED_MODE` は新戦略に未対応です。`config.py` で `ENHANCED_MODE = False` を使用してください。
-- `eval_compare.py` と `eval_lookback.py` は旧ターゲット前提のため、現時点では新戦略評価には使いません。
-
-## 検証コマンド
-
-```bash
+```powershell
 python eval_walkforward.py
 python eval_lookback_top1.py
 ```
 
-## 主な実装ファイル
+## 注意事項
 
-- `src/preprocessor.py`
-- `target_high_5pct` / `target_low_5pct` 生成
-- `src/model.py`
-- 2モデル学習・保存（`target_high_5pct`, `target_low_5pct`）
-- `src/predictor.py`
-- 2確率ランキング出力
-- `main.py`
-- CLI運用（`fetch/train/predict/run`）
+- `ENHANCED_MODE` は未対応です。`config.py` では `ENHANCED_MODE = False` を使用してください。
+- 既存モデルとの特徴量不一致がある場合、`python main.py train --full` で再学習してください。
+- `eval_compare.py` と `eval_lookback.py` は旧評価コードのため、現在の主タスク評価には `eval_walkforward.py` / `eval_lookback_top1.py` を優先してください。
+
+## トラブルシュート
+
+### 1. `py` コマンドが見つからない
+
+`py` ではなく `python` を使ってください。
+
+```powershell
+python --version
+where.exe python
+```
+
+### 2. `Activate.ps1` 実行時に実行ポリシーエラー
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+```
+
+### 3. `No module named 'xlrd'`
+
+```powershell
+pip install -r requirements.txt
+```
+
+### 4. activate せずに実行したい
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe main.py run -o ranking.csv
+```
